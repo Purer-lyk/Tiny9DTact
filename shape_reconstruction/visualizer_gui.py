@@ -53,7 +53,7 @@ class TactileMeshVisualizer:
             title="9DTact — Shape Reconstruction", width=w, height=h
         )
         self._vis.set_background(
-            np.array([0.05, 0.05, 0.07, 1.0], dtype=np.float32)
+            np.array([[0.05], [0.05], [0.07], [1.0]], dtype=np.float32)
         )
 
         # --- precompute mesh skeleton -------------------------------------
