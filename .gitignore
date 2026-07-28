@@ -1,0 +1,33 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Brainstorming artifacts (visual companion output, design docs scratch)
+.superpowers/
+
+# Build / distribution
+build/
+dist/
+*.egg
+
+# Logs and temp outputs (keep calibration data and saved_models)
+*.log
