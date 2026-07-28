@@ -50,7 +50,7 @@ class TactileMeshVisualizer:
 
         w, h = 1600, 1000
         self._vis = O3DVisualizer(
-            window_name="9DTact — Shape Reconstruction", width=w, height=h
+            title="9DTact — Shape Reconstruction", width=w, height=h
         )
         self._vis.set_background(
             np.array([0.05, 0.05, 0.07, 1.0], dtype=np.float32)
