@@ -19,7 +19,10 @@ class Sensor(Camera):
 
             # parameters for height_map
             if ref is None:
-                self.ref = self.get_rectify_crop_avg_image()
+                # Automatic reference capture: skip the camera warm-up
+                # frames, then average 10 frames once the image is
+                # stable (no keypress needed).
+                self.ref = self.get_stable_rectify_crop_avg_image()
             else:
                 self.ref = ref
             self.ref_GRAY = cv2.cvtColor(self.ref, cv2.COLOR_BGR2GRAY)

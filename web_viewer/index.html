@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>9DTact — Shape Reconstruction (Web Viewer)</title>
+<style>
+  :root {
+    --bg: #0d0d11;
+    --panel: #17171c;
+    --border: #2c2c33;
+    --text: #f2f2f5;
+    --text-dim: #b8b8c2;
+    --accent: #0a84ff;
+    --hot: #ff3b30;
+  }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    display: flex;
+    flex-direction: row;
+  }
+  #canvas-wrap {
+    flex: 1;
+    position: relative;
+    background: var(--bg);
+  }
+  canvas { display: block; }
+  #sidebar {
+    width: 360px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    padding: 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
+  }
+  h2 { font-size: 13px; font-weight: 600; color: var(--text); margin: 16px 0 8px 0; }
+  h2:first-child { margin-top: 0; }
+  .dm-wrap { margin-bottom: 4px; }
+  .dm-flex {
+    display: flex; align-items: stretch; gap: 8px;
+  }
+  #dm-canvas {
+    background: #0d0d11;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 260px;
+    height: 180px;
+    display: block;
+    flex: 0 0 auto;
+  }
+  .dm-bar {
+    display: flex; flex-direction: row;
+    align-items: stretch; gap: 4px;
+  }
+  #dm-bar {
+    background: linear-gradient(
+      to top,
+      rgb(0, 0, 127) 0%,
+      rgb(0, 0, 255) 12.5%,
+      rgb(0, 255, 255) 37.5%,
+      rgb(255, 255, 0) 62.5%,
+      rgb(255, 128, 0) 87.5%,
+      rgb(127, 0, 0) 100%
+    );
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    width: 14px;
+    height: 156px;
+    display: block;
+  }
+  .dm-bar-labels {
+    display: flex; flex-direction: column;
+    justify-content: space-between;
+    font-family: Consolas, monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    height: 156px;
+    width: 28px;
+  }
+  .kv-row {
+    display: flex; justify-content: space-between;
+    padding: 6px 0;
+    font-size: 13px;
+  }
+  .kv-row .k { color: var(--text-dim); }
+  .kv-row .v { color: var(--text); font-family: Consolas, monospace; }
+  .btn-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  }
+  button {
+    background: #1a1a22; color: var(--text);
+    border: 1px solid #353540; border-radius: 6px;
+    padding: 8px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #25253a; }
+  button:active { background: var(--accent); }
+  #status {
+    position: absolute; top: 8px; left: 12px;
+    color: var(--text-dim); font-size: 12px;
+    background: rgba(13,13,17,0.6); padding: 4px 8px;
+    border-radius: 4px;
+  }
+  #status.error { color: var(--hot); }
+</style>
+</head>
+<body>
+
+<div id="canvas-wrap">
+  <div id="status">connecting to ws://localhost:8765 ...</div>
+  <canvas id="gl"></canvas>
+</div>
+
+<aside id="sidebar">
+  <div class="dm-wrap">
+    <h2>2D Depth Map (top view)</h2>
+    <div class="dm-flex">
+      <canvas id="dm-canvas" width="260" height="180"></canvas>
+      <div class="dm-bar">
+        <canvas id="dm-bar" width="14" height="180"></canvas>
+        <div class="dm-bar-labels">
+          <span id="dm-bar-top">0.0</span>
+          <span id="dm-bar-mid">—</span>
+          <span id="dm-bar-bot">max</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Readings</h2>
+  <div class="kv-row"><span class="k">Max depth</span><span class="v" id="r-max">—</span></div>
+  <div class="kv-row"><span class="k">Contact area</span><span class="v" id="r-area">—</span></div>
+  <div class="kv-row"><span class="k">FPS</span><span class="v" id="r-fps">—</span></div>
+  <div class="kv-row"><span class="k">Render FPS</span><span class="v" id="r-rfps">—</span></div>
+  <div class="kv-row"><span class="k">Latency</span><span class="v" id="r-lat">—</span></div>
+  <div class="kv-row"><span class="k">GPU</span><span class="v" id="r-gpu" style="font-size:10px">—</span></div>
+
+  <h2>View</h2>
+  <div class="btn-grid">
+    <button id="btn-default">Default 45°</button>
+    <button id="btn-top">Top view</button>
+    <button id="btn-side">Side view</button>
+    <button id="btn-reset">Reset view</button>
+  </div>
+</aside>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// Visual scale for press depth. The sensor reports depths in mm,
+// but a real press is only 1-2 mm on a ~15 mm wide sensor, so the
+// bump is invisible at the right viewing distance. We exaggerate
+// the depth by this factor for visualization only — physical
+// readings in the sidebar remain in mm. Declared at the top so it
+// is initialised before any use (avoids TDZ ReferenceError).
+const Z_SCALE = 6.0;
+// Temporal denoise: EMA weight of the incoming frame (lower =
+// smoother but laggier). Speckle noise is frame-random, so a 2-3
+// frame EMA averages it out while keeping the press response crisp.
+const TEMPORAL_ALPHA = 0.45;
+// Heights below this (mm) snap to zero so the un-pressed area is a
+// clean flat plane instead of a shimmering noise floor. Same value
+// as the contact threshold used in Python's compute_readings.
+const NOISE_FLOOR_MM = 0.05;
+// Contour enhancement: unsharp mask boosts shallow ridges (e.g.
+// pressed characters) back up after the temporal EMA smoothing.
+const USM_RADIUS = 4;    // blur radius in px
+const USM_AMOUNT = 1.2;  // edge boost strength
+// Colour gamma < 1 expands low/mid-depth tones so stroke contours
+// separate from the background instead of blending into deep blue.
+const COLOR_GAMMA = 0.75;
+
+// ----- State -----
+const state = {
+  connected: false,
+  ws: null,
+  W: 0,
+  H: 0,
+  pixel_per_mm: 0,
+  shape: null,
+  mesh: null,
+  geometry: null,
+  dm_canvas: null,
+  dm_ctx: null,
+  dm_image: null,
+  // Latest fully-decoded frame; the rAF loop reads and clears this
+  // each tick. When the tab is in the background we stop the rAF
+  // loop and incoming frames overwrite this slot directly.
+  pending_frame: null,
+  pending_dirty: false,
+  rAF_token: 0,
+  tab_visible: !document.hidden,
+  // Diagnostics: rAF cadence (render fps) and end-to-end latency.
+  raf_last: 0,
+  raf_ema: 0,
+  latency_ms: null,
+  // Temporal-denoise buffer for the height map.
+  ema_height: null,
+};
+
+// ----- Three.js setup -----
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, powerPreference: 'high-performance',
+});
+// Cap the device pixel ratio at 1: on HiDPI displays the GL canvas
+// would otherwise rasterise 1.5-2.25x the pixels, which integrated
+// GPUs struggle with. The DOM UI stays crisp regardless.
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+// Log the actual GL renderer so a software-rasterisation fallback
+// (SwiftShader) is easy to spot in DevTools (set 9DTACT_DEBUG=1 to
+// open the desktop window with DevTools enabled).
+try {
+  const _gl = renderer.getContext();
+  const _dbg = _gl.getExtension('WEBGL_debug_renderer_info');
+  const _name = _dbg ? _gl.getParameter(_dbg.UNMASKED_RENDERER_WEBGL)
+                     : _gl.getParameter(_gl.RENDERER);
+  console.log('WebGL renderer:', _name);
+  const _gpuEl = document.getElementById('r-gpu');
+  if (_gpuEl) {
+    _gpuEl.textContent = String(_name).replace(/^ANGLE \((.*)\)$/, '$1')
+      .slice(0, 40);
+    _gpuEl.title = _name;
+  }
+} catch (e) { /* info only */ }
+
+// CSS2D overlay for axis labels (DOM-based, no font loading needed).
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(canvas.clientWidth || 1, canvas.clientHeight || 1);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.getElementById('canvas-wrap').appendChild(labelRenderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0d0d11');
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+// The sensor lies in the XY plane with its surface normal pointing
+// +Z. Z is the world "up" for the camera so press bumps grow
+// straight up on screen. The default camera is offset for a 45°
+// overview from behind-right-above; it is re-framed on the first
+// frame (see setView in ensureMesh).
+camera.up.set(0, 0, 1);
+camera.position.set(12, -16, 12);
+camera.lookAt(8, -4, 0);
+
+let controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(8, -4, 0);
+
+// ----- World reference frame -----
+// Custom rectangular grid that exactly covers the sensor footprint
+// (GridHelper is always square, so it never hugs a non-square sensor).
+let _grid = null;
+function rebuildGrid() {
+  if (_grid) { scene.remove(_grid); _grid.geometry.dispose(); _grid.material.dispose(); }
+  const ppm = state.pixel_per_mm || 0.1;
+  const W = state.W || 160;
+  const H = state.H || 80;
+  const xMax = W * ppm, yMax = H * ppm;
+  const step = 1; // 1 mm cells
+  const pts = [];
+  for (let x = 0; x <= xMax + 1e-6; x += step) {
+    pts.push(x, 0, 0, x, -yMax, 0);
+  }
+  for (let y = 0; y >= -yMax - 1e-6; y -= step) {
+    pts.push(0, y, 0, xMax, y, 0);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position',
+    new THREE.Float32BufferAttribute(pts, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: 0x3a3a45, transparent: true, opacity: 0.9,
+  });
+  _grid = new THREE.LineSegments(geom, mat);
+  _grid.position.z = -0.02; // just below the mesh to avoid z-fighting
+  scene.add(_grid);
+}
+rebuildGrid();
+
+// Axis triad at the mesh's bottom-left corner ((0, yMin) in the
+// default view). Re-positioned whenever the sensor size is known.
+let _axesTriad = null;
+let _axisLetters = [];
+function rebuildAxes() {
+  const ppm = state.pixel_per_mm || 0.1;
+  const W = state.W || 160;
+  const H = state.H || 80;
+  const yMin = -H * ppm;
+  // Lifted a hair above z=0 so the arrows never z-fight with the
+  // flat regions of the mesh.
+  const px = 0, py = yMin, pz = 0.05;
+  if (!_axesTriad) {
+    _axesTriad = new THREE.AxesHelper(4);
+    scene.add(_axesTriad);
+    _axisLetters = [
+      makeLabel('X', [0, 0, 0]),
+      makeLabel('Y', [0, 0, 0]),
+      makeLabel('Z (depth)', [0, 0, 0]),
+    ];
+    for (const l of _axisLetters) scene.add(l);
+  }
+  _axesTriad.position.set(px, py, pz);
+  _axisLetters[0].position.set(px + 4.5, py, pz);
+  _axisLetters[1].position.set(px, py + 4.5, pz);
+  _axisLetters[2].position.set(px, py, pz + 4.5);
+}
+
+function makeLabel(text, position) {
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.cssText = `
+    color: #f2f2f5;
+    background: rgba(13,13,17,0.7);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', monospace;
+    font-size: 11px;
+    pointer-events: none;
+    user-select: none;
+    border: 1px solid #2c2c33;
+  `;
+  const obj = new CSS2DObject(el);
+  obj.position.set(...position);
+  return obj;
+}
+rebuildAxes();
+
+// Lighting
+const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+dirLight.position.set(8, 10, 12);
+scene.add(dirLight);
+const fillLight = new THREE.DirectionalLight(0xffffff, 0.25);
+fillLight.position.set(-8, -6, 6);
+scene.add(fillLight);
+
+// ----- Resize handling -----
+function resize() {
+  const wrap = document.getElementById('canvas-wrap');
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  labelRenderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ----- Jet colormap (matches Python's _build_jet_lut) -----
+function jetLut() {
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let r, g, b;
+    if (t < 0.125) [r, g, b] = [0, 0, 0.5 + 4 * t];
+    else if (t < 0.375) [r, g, b] = [0, t * 4 - 0.5, 1];
+    else if (t < 0.625) [r, g, b] = [t * 4 - 1.5, 1, -t * 4 + 3.5];
+    else if (t < 0.875) [r, g, b] = [1, -t * 4 + 4.5, 0];
+    else [r, g, b] = [-t * 4 + 4.5, 0, 0];
+    lut[i * 3] = Math.max(0, Math.min(1, r)) * 255;
+    lut[i * 3 + 1] = Math.max(0, Math.min(1, g)) * 255;
+    lut[i * 3 + 2] = Math.max(0, Math.min(1, b)) * 255;
+  }
+  return lut;
+}
+const JET = jetLut();
+function jetColor(t, lut = JET) {
+  const idx = Math.max(0, Math.min(255, Math.round(t * 255))) * 3;
+  return [lut[idx] / 255, lut[idx + 1] / 255, lut[idx + 2] / 255];
+}
+
+// ----- Mesh management -----
+function ensureMesh(W, H, pixel_per_mm) {
+  if (state.mesh && state.W === W && state.H === H) return;
+  state.W = W; state.H = H; state.pixel_per_mm = pixel_per_mm;
+
+  // PlaneGeometry sits in the XY plane with the normal pointing in
+  // +Z. We keep it that way: the camera looks down -Z toward the
+  // sensor, and press depth is rendered as a +Z displacement so the
+  // bump grows toward the viewer.
+  const g = new THREE.PlaneGeometry(
+    W * pixel_per_mm, H * pixel_per_mm, W - 1, H - 1
+  );
+
+  const pos = g.attributes.position;
+  g.setAttribute('color', new THREE.BufferAttribute(
+    new Float32Array(pos.count * 3), 3
+  ));
+  g.attributes.position.usage = THREE.DynamicDrawUsage;
+  g.attributes.color.usage = THREE.DynamicDrawUsage;
+
+  const mat = new THREE.MeshPhongMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    shininess: 30,
+    flatShading: false,
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  // The reference frame (grid, walls, tick labels) places the sensor
+  // at x ∈ [0, W*ppm], y ∈ [-H*ppm, 0]. PlaneGeometry is centred on
+  // the origin, so shift it into that frame.
+  const xMax = W * pixel_per_mm, yMax = H * pixel_per_mm;
+  mesh.position.set(xMax / 2, -yMax / 2, 0);
+  if (state.mesh) scene.remove(state.mesh);
+  scene.add(mesh);
+  state.mesh = mesh;
+  state.geometry = g;
+  state.verts_per_row = W;
+
+  // The grid and axis triad are rebuilt here so they follow the
+  // actual sensor size.
+  rebuildGrid();
+  rebuildAxes();
+  // First frame: re-centre the camera on the true sensor centre.
+  setView('default45');
+}
+
+// Visual scale for press depth is declared at the top of this file
+// (see Z_SCALE) so it is initialised before any consumer.
+
+// ----- Temporal denoise + contour enhancement -----
+// The height map carries per-frame speckle noise that shows up as
+// spikes (毛刺) on the mesh. An EMA across frames averages it out,
+// and a noise-floor snap flattens sub-contact values to exactly 0.
+// An unsharp mask then restores the crispness of shallow features
+// (pressed characters, edges) that the smoothing softens.
+function denoiseHeight(heightFlat) {
+  const N = heightFlat.length;
+  if (!state.ema_height || state.ema_height.length !== N) {
+    state.ema_height = new Float32Array(N);
+    state.usm_tmp = new Float32Array(N);
+    state.usm_out = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      state.ema_height[i] =
+        heightFlat[i] < NOISE_FLOOR_MM ? 0 : heightFlat[i];
+    }
+    state.usm_out.set(state.ema_height);
+    return state.usm_out;
+  }
+  const ema = state.ema_height;
+  const a = TEMPORAL_ALPHA;
+  for (let i = 0; i < N; i++) {
+    const v = a * heightFlat[i] + (1 - a) * ema[i];
+    ema[i] = v < NOISE_FLOOR_MM ? 0 : v;
+  }
+  // Unsharp mask: out = ema + amount * (ema - blur(ema)).
+  // Separable box blur (sliding window) keeps this cheap.
+  _boxBlurH(ema, state.usm_tmp, N);
+  _boxBlurV(state.usm_tmp, state.usm_out, N);
+  const out = state.usm_out;
+  for (let i = 0; i < N; i++) {
+    const v = ema[i] + USM_AMOUNT * (ema[i] - out[i]);
+    out[i] = v < NOISE_FLOOR_MM ? 0 : v;
+  }
+  return out;
+}
+
+// Horizontal box-blur pass over a flat row-major buffer.
+// (W/H come from state; r = USM_RADIUS.)
+function _boxBlurH(src, dst, N) {
+  const W = state.verts_per_row;
+  const H = N / W;
+  const r = USM_RADIUS;
+  const win = 2 * r + 1;
+  for (let y = 0; y < H; y++) {
+    const off = y * W;
+    let acc = 0;
+    for (let i = -r; i <= r; i++) {
+      acc += src[off + Math.min(W - 1, Math.max(0, i))];
+    }
+    for (let x = 0; x < W; x++) {
+      dst[off + x] = acc / win;
+      acc += src[off + Math.min(W - 1, x + r + 1)]
+           - src[off + Math.max(0, x - r)];
+    }
+  }
+}
+
+// Vertical box-blur pass (same, along columns).
+function _boxBlurV(src, dst, N) {
+  const W = state.verts_per_row;
+  const H = N / W;
+  const r = USM_RADIUS;
+  const win = 2 * r + 1;
+  for (let x = 0; x < W; x++) {
+    let acc = 0;
+    for (let i = -r; i <= r; i++) {
+      acc += src[Math.min(H - 1, Math.max(0, i)) * W + x];
+    }
+    for (let y = 0; y < H; y++) {
+      dst[y * W + x] = acc / win;
+      acc += src[Math.min(H - 1, y + r + 1) * W + x]
+           - src[Math.max(0, y - r) * W + x];
+    }
+  }
+}
+
+function updateMesh(heightFlat, depth_max) {
+  if (!state.geometry) return;
+  const pos = state.geometry.attributes.position;
+  const col = state.geometry.attributes.color;
+  for (let i = 0; i < pos.count; i++) {
+    const z = heightFlat[i] * Z_SCALE;
+    pos.setZ(i, z);
+    const t = heightFlat[i] / depth_max;
+    // Fast exact path for gamma 0.75: t^0.75 = sqrt(t * sqrt(t)).
+    const tg = (COLOR_GAMMA === 0.75)
+      ? Math.sqrt(t * Math.sqrt(t))
+      : Math.pow(t, COLOR_GAMMA);
+    const [r, g, b] = jetColor(tg);
+    col.setXYZ(i, r, g, b);
+  }
+  pos.needsUpdate = true;
+  col.needsUpdate = true;
+  updateGridNormals(heightFlat);
+}
+
+// Fast normals for a regular height-field grid: central differences
+// instead of geometry.computeVertexNormals()'s generic triangle pass.
+// For a 1254x696 grid this is roughly an order of magnitude cheaper
+// and visually identical (same smooth per-vertex normals).
+//   n = normalize(-dz/dx, -dz/dy, 1)
+// Grid spacing is ~pixel_per_mm mm; we scale by 2*spacing and let the
+// normalisation absorb it.
+function updateGridNormals(heightFlat) {
+  const geom = state.geometry;
+  const nor = geom.attributes.normal;
+  if (!nor) return;
+  const arr = nor.array;
+  const W = state.verts_per_row;
+  const N = heightFlat.length;
+  const rows = N / W;
+  const k = 2 * (state.pixel_per_mm || 0.1);  // 2 * grid spacing (mm)
+  for (let i = 0; i < N; i++) {
+    const row = (i / W) | 0;
+    const colIdx = i - row * W;
+    // Neighbour stride > 1 low-passes the gradient estimate so
+    // per-pixel noise doesn't speckle the shading. The temporal EMA
+    // already removed most speckle, so a small stride keeps edges
+    // crisp without reintroducing noise.
+    const s = 2;
+    const h = heightFlat[i] * Z_SCALE;
+    const hL = colIdx >= s ? heightFlat[i - s] * Z_SCALE : h;
+    const hR = colIdx <= W - 1 - s ? heightFlat[i + s] * Z_SCALE : h;
+    // Row 0 of the grid sits at world y = 0; increasing row index
+    // decreases world y, so +y is toward the previous row.
+    const hU = row >= s ? heightFlat[i - s * W] * Z_SCALE : h;
+    const hD = row <= rows - 1 - s ? heightFlat[i + s * W] * Z_SCALE : h;
+    let nx = -(hR - hL);
+    let ny = -(hU - hD);
+    const nz = k * s;  // spacing scales with the stride
+    const inv = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const o = i * 3;
+    arr[o] = nx * inv;
+    arr[o + 1] = ny * inv;
+    arr[o + 2] = nz * inv;
+  }
+  nor.needsUpdate = true;
+}
+
+// ----- 2D depth map (top view) -----
+function ensureDmCanvas() {
+  if (state.dm_ctx) return;
+  const c = document.getElementById('dm-canvas');
+  state.dm_canvas = c;
+  state.dm_ctx = c.getContext('2d');
+  state.dm_image = state.dm_ctx.createImageData(c.width, c.height);
+  // Pre-fill with deep blue
+  const data = state.dm_image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 0; data[i + 1] = 0; data[i + 2] = 120; data[i + 3] = 255;
+  }
+  state.dm_ctx.putImageData(state.dm_image, 0, 0);
+}
+
+function updateDmCanvas(heightFlat, depth_max) {
+  ensureDmCanvas();
+  const c = state.dm_canvas;
+  const ctx = state.dm_ctx;
+  const img = state.dm_image;
+  const data = img.data;
+  const W = state.W;     // number of columns (pixels in x)
+  const H = state.H;     // number of rows (pixels in y)
+  const outW = c.width, outH = c.height;
+  // heightFlat is row-major: heightFlat[row * W + col]
+  // Canvas origin is top-left. The data was already mirrored in x
+  // at decode time (decodeFrame), so it matches reality and the 3D
+  // mesh with no extra flipping here.
+  for (let y = 0; y < outH; y++) {
+    const srcY = Math.min(H - 1, Math.floor(y * H / outH));
+    for (let x = 0; x < outW; x++) {
+      const srcX = Math.min(W - 1, Math.floor(x * W / outW));
+      const z = heightFlat[srcY * W + srcX];
+      const t = Math.pow(z / depth_max, COLOR_GAMMA);
+      const idx = Math.max(0, Math.min(255, Math.round(t * 255))) * 3;
+      const off = (y * outW + x) * 4;
+      data[off] = JET[idx];
+      data[off + 1] = JET[idx + 1];
+      data[off + 2] = JET[idx + 2];
+      data[off + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// ----- View presets -----
+// Each preset sets the camera at a fixed position relative to the
+// sensor centre. We destroy and rebuild OrbitControls because
+// mutating camera.position does not reset the controls' internal
+// spherical state — the user-driven rotation would slowly leak
+// through preset clicks otherwise.
+// Centre of the sensor in the world frame: the sensor occupies
+// x ∈ [0, W*ppm], y ∈ [-H*ppm, 0].
+function sensorCenter() {
+  const ppm = state.pixel_per_mm || 0.1;
+  const W = state.W || 160, H = state.H || 80;
+  return [W * ppm / 2, -H * ppm / 2];
+}
+
+function setView(name, dist) {
+  if (dist === undefined) {
+    const sensorW = state.W ? state.W * state.pixel_per_mm : 16;
+    const sensorH = state.H ? state.H * state.pixel_per_mm : 12;
+    // A hard press raises a bump up to ~2 mm × Z_SCALE visual units.
+    // The camera must be far enough back for that bump to stay
+    // inside the 45° vertical FOV (this matters most for the top
+    // view, where the bump points straight at the camera).
+    const maxBump = 2.0 * Z_SCALE;
+    const distForBump = maxBump / Math.tan(22.5 * Math.PI / 180);
+    dist = Math.max(Math.max(sensorW, sensorH) * 1.9, distForBump * 1.1);
+  }
+  const [cx, cy] = sensorCenter();
+  let eye, up;
+  switch (name) {
+    case "top":
+      // Top view: along -Z. up=(0,1,0) keeps +X to the right and the
+      // y=0 edge at the top of the screen, matching the 2D depth
+      // map. (up=(0,0,1) would be degenerate when looking along Z.)
+      eye = [cx, cy + 0.01, dist];
+      up = [0, 1, 0];
+      break;
+    case "side":
+      // Side view: along -X, looking at the sensor from the +X side.
+      eye = [cx + dist, cy, 0];
+      up = [0, 0, 1];
+      break;
+    case "front":
+      // Front view: along -Y (sensor y-axis), looking from +Y.
+      eye = [cx, cy + dist, 0];
+      up = [0, 0, 1];
+      break;
+    case "default45":
+    default:
+      // Default 45°: from behind-right-above with Z as screen-up, so
+      // +X reads right, the back edge sits at the bottom of the
+      // screen, and press depth grows straight up.
+      eye = [cx + dist * 0.7, cy - dist * 0.7, dist * 0.7];
+      up = [0, 0, 1];
+      break;
+  }
+  // Dispose the old OrbitControls so its internal spherical state
+  // (azimuth/polar/distance from the user's last drag) is discarded.
+  controls.dispose();
+  camera.position.set(...eye);
+  camera.up.set(...up);
+  camera.lookAt(cx, cy, 0);
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.target.set(cx, cy, 0);
+  controls.update();
+}
+
+document.getElementById('btn-default').onclick = () => setView('default45');
+document.getElementById('btn-top').onclick = () => setView('top');
+document.getElementById('btn-side').onclick = () => setView('side');
+document.getElementById('btn-reset').onclick = () => setView('default45');
+
+// ----- Status indicator -----
+function setStatus(text, isError = false) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+}
+
+// ----- Readouts -----
+function updateReadings(r) {
+  document.getElementById('r-max').textContent = r.max_depth.toFixed(2) + ' mm';
+  document.getElementById('r-area').textContent = r.contact_area_mm2.toFixed(1) + ' mm²';
+  document.getElementById('r-fps').textContent = (r.fps || 0).toFixed(1);
+  document.getElementById('r-rfps').textContent =
+    state.raf_ema ? state.raf_ema.toFixed(0) : '—';
+  document.getElementById('r-lat').textContent = (state.latency_ms != null)
+    ? state.latency_ms.toFixed(0) + ' ms' : '—';
+  // Update the depth-map colour-bar labels: top of the bar is the
+  // current depth_max, bottom is 0.
+  const dmax = r.depth_max || 0;
+  document.getElementById('dm-bar-top').textContent = dmax.toFixed(1);
+  document.getElementById('dm-bar-mid').textContent = (dmax / 2).toFixed(1);
+  document.getElementById('dm-bar-bot').textContent = '0.0';
+}
+
+// ----- Frame loop -----
+function applyPending() {
+  if (!state.pending_dirty || !state.pending_frame) return;
+  const f = state.pending_frame;
+  state.pending_frame = null;
+  state.pending_dirty = false;
+  // End-to-end latency: Python encode time -> page apply time.
+  if (f.timestamp_ms) {
+    state.latency_ms = Date.now() - f.timestamp_ms;
+  }
+  ensureMesh(f.W, f.H, f.pixel_per_mm);
+  const h = denoiseHeight(f.height_map);
+  updateMesh(h, f.depth_max);
+  updateDmCanvas(h, f.depth_max);
+  updateReadings(f);
+}
+
+function animate() {
+  state.rAF_token = requestAnimationFrame(animate);
+  // Render-FPS estimate from the rAF cadence (EMA).
+  const now = performance.now();
+  if (state.raf_last) {
+    const inst = 1000.0 / Math.max(1e-3, now - state.raf_last);
+    state.raf_ema = state.raf_ema ? state.raf_ema * 0.9 + inst * 0.1 : inst;
+  }
+  state.raf_last = now;
+  if (!state.tab_visible) return;
+  controls.update();  // required for enableDamping inertia
+  applyPending();
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+
+// Pause rendering while the tab is hidden so we don't burn CPU/GPU
+// (and so the renderer doesn't accumulate stale frames). Incoming
+// frames still update state.pending_frame so when the tab is
+// restored we immediately show the latest.
+function pauseRendering() {
+  state.tab_visible = false;
+  if (state.rAF_token) cancelAnimationFrame(state.rAF_token);
+  state.rAF_token = 0;
+}
+function resumeRendering() {
+  if (state.tab_visible) return;
+  state.tab_visible = true;
+  // Drop any stale frames the browser was buffering; keep only the
+  // most recent. We achieve this by simply re-entering the loop:
+  // every tick overwrites pending_frame with the freshest one.
+  state.pending_dirty = false;
+  state.rAF_token = requestAnimationFrame(animate);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pauseRendering();
+  else resumeRendering();
+});
+
+animate();
+
+// ----- WebSocket wire protocol -----
+const MAGIC = 0x395D534D;
+function decodeFrame(data) {
+  if (data.byteLength < 48) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const magic = view.getUint32(0, true);
+  if (magic !== MAGIC) return null;
+  const frame_index = view.getUint32(4, true);
+  const ts_ms = view.getFloat64(8, true);
+  const H = view.getUint16(16, true);
+  const W = view.getUint16(18, true);
+  const pixel_per_mm = view.getFloat32(20, true);
+  const max_depth = view.getFloat32(24, true);
+  const area = view.getFloat32(28, true);
+  const cx = view.getFloat32(32, true);
+  const cy = view.getFloat32(36, true);
+  const fps = view.getFloat32(40, true);
+  const depth_max = view.getFloat32(44, true);
+  const u16 = new Uint16Array(
+    data.buffer, data.byteOffset + 48, W * H
+  );
+  // Decode back to float32 mm.
+  // Wire format is C-order: height_map[row * W + col], row 0 is the
+  // top of the camera image.
+  // The sensor camera captures a mirrored image, so flip each row
+  // here: displayed column 0 then corresponds to the physical left
+  // edge of the sensor, and every view (2D + 3D) matches reality.
+  const height_map = new Float32Array(W * H);
+  for (let r = 0; r < H; r++) {
+    const rowOff = r * W;
+    for (let c = 0; c < W; c++) {
+      height_map[rowOff + c] = u16[rowOff + (W - 1 - c)] / 100.0;
+    }
+  }
+  // Mirror the contact-centre x so it stays consistent with the
+  // mirrored height map.
+  const cxM = cx < 0 ? -1 : (W * pixel_per_mm) - cx;
+  return {
+    H, W, pixel_per_mm,
+    frame_index, timestamp_ms: ts_ms,
+    max_depth,
+    contact_area_mm2: area,
+    contact_center_mm: (cxM < 0 || cy < 0) ? null : [cxM, cy],
+    fps, depth_max,
+    height_map,
+  };
+}
+
+function connect() {
+  const ws = new WebSocket('ws://127.0.0.1:8765');
+  ws.binaryType = 'arraybuffer';
+  state.ws = ws;
+  ws.onopen = () => {
+    state.connected = true;
+    setStatus('connected');
+  };
+  ws.onclose = () => {
+    state.connected = false;
+    setStatus('disconnected — reconnecting in 1s', true);
+    setTimeout(connect, 1000);
+  };
+  ws.onerror = () => {
+    setStatus('cannot reach ws://127.0.0.1:8765 yet...', true);
+  };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') return;
+    const f = decodeFrame(new Uint8Array(ev.data));
+    if (!f) return;
+    // Drop stale frames if the tab was paused and many frames
+    // accumulated; we only keep the most recent.
+    state.pending_frame = f;
+    state.pending_dirty = true;
+    if (!state.tab_visible) return;
+    // Don't apply directly here: the rAF loop reads pending_frame
+    // each tick. This avoids overloading GPU uploads when many
+    // frames arrive within a single render interval.
+  };
+}
+
+connect();
+</script>
+</body>
+</html>

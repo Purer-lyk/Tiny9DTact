@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import cv2
 import yaml
@@ -116,6 +118,77 @@ class Camera:
             img_add += raw_image
         img_avg = img_add / img_number
         img_avg = img_avg.astype(np.uint8)
+        return img_avg
+
+    def get_stable_rectify_crop_avg_image(
+        self,
+        skip_frames=10,
+        stable_frames=15,
+        diff_threshold=2.0,
+        avg_frames=10,
+        timeout_s=15.0,
+    ):
+        """Automatically capture the reference image once the video
+        has stabilised (auto-exposure settled, no residual motion).
+
+        Streams rectified+cropped frames and measures the mean
+        absolute difference between consecutive downsampled gray
+        frames. The first `skip_frames` frames are always discarded
+        (camera warm-up). Once the difference stays below
+        `diff_threshold` for `stable_frames` consecutive frames, the
+        following `avg_frames` frames are averaged into the
+        reference. If the image never stabilises within `timeout_s`
+        seconds, a plain average is captured anyway so the program
+        never blocks forever.
+        """
+        print('Waiting for the image to stabilise ...')
+        t0 = time.monotonic()
+        prev_small = None
+        stable_count = 0
+        n_read = 0
+        img = None
+        while True:
+            try:
+                img = self.get_rectify_crop_image()
+            except (TypeError, IndexError):
+                time.sleep(0.01)
+                continue
+            n_read += 1
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            small = cv2.resize(
+                gray, (0, 0), fx=0.25, fy=0.25,
+                interpolation=cv2.INTER_AREA,
+            ).astype(np.float32)
+            if prev_small is not None and n_read > skip_frames:
+                diff = float(np.mean(np.abs(small - prev_small)))
+                if diff < diff_threshold:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                if stable_count >= stable_frames:
+                    print(
+                        f'Image stable after {n_read} frames '
+                        f'({time.monotonic() - t0:.1f} s); '
+                        f'capturing reference.'
+                    )
+                    break
+            prev_small = small
+            if time.monotonic() - t0 > timeout_s:
+                print('Stability timeout reached; capturing anyway.')
+                break
+        img_add = np.zeros(img.shape, np.float64)
+        n_used = 0
+        for _ in range(avg_frames):
+            try:
+                f = self.get_rectify_crop_image()
+            except (TypeError, IndexError):
+                time.sleep(0.01)
+                continue
+            img_add += f
+            n_used += 1
+        if n_used == 0:
+            raise RuntimeError('Could not read frames for the reference image')
+        img_avg = (img_add / n_used).astype(np.uint8)
         return img_avg
 
     def get_rectify_crop_avg_image(self):

@@ -31,3 +31,12 @@ dist/
 
 # Logs and temp outputs (keep calibration data and saved_models)
 *.log
+
+# Local smoke tests / scratch sandboxes (not part of the codebase)
+# Anchored to the directory root so they don't swallow nested tests/.
+test_electron/
+/test_*.py
+/test_vispy.py
+/test_pyqt.py
+/test_ws_server.py
+/test_ws_client.py
