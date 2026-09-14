@@ -11,6 +11,11 @@ ml_collections==0.1.1
 numpy==1.23.5
 open3d
 opencv_python==4.8.0.76
+PyQt5==5.15.10
+pyqtgraph==0.13.4
+pywebview>=5.1
 PyYAML==6.0.1
 scipy==1.10.1
 setuptools==68.0.0
+vispy==0.14.3
+websockets==12.0
