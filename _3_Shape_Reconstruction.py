@@ -22,7 +22,13 @@ import os
 import threading
 import time
 
+# Mute the MSMF warning storm OpenCV prints while the USB camera is
+# unplugged (cap_msmf.cpp OnReadSample error spam). Must be set
+# before cv2 is imported.
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+
 import cv2
+import numpy as np
 import yaml
 
 from shape_reconstruction import Sensor
@@ -48,16 +54,79 @@ def _process_and_push(sensor, vws, img):
     )
 
 
+def _push_status_frame(sensor, vws, status):
+    """Blank the viewer: a zero height map tagged with a status code
+    (1 = unplugged, 2 = reconnecting). The page blacks out the 2D/3D
+    views and shows the state instead of the jet colormap."""
+    blank = np.zeros(sensor.ref_GRAY.shape[:2], dtype=np.float32)
+    vws.update(
+        blank,
+        {
+            "max_depth": 0.0,
+            "contact_area_mm2": 0.0,
+            "contact_center_mm": (None, None),
+            "pixel_per_mm": float(sensor.pixel_per_mm),
+            "status": status,
+        },
+    )
+
+
+def _recover_connection(sensor, vws, stop, poll_s=1.0):
+    """Handle an unplugged camera: keep the viewer blanked, wait for
+    the device to be re-attached, then recapture the reference image
+    (auto-exposure needs to settle again) and resume streaming.
+
+    Returns False only when the stop event fires (window closed)."""
+    print("[capture] camera lost - blanking viewer, waiting for replug ...")
+    _push_status_frame(sensor, vws, status=1)
+    sensor.cap.release()
+    last_blank = time.monotonic()
+    while stop is None or not stop.is_set():
+        if sensor.open_capture():
+            print("[capture] camera re-opened; capturing fresh reference ...")
+            _push_status_frame(sensor, vws, status=2)
+            try:
+                sensor.ref = sensor.get_stable_rectify_crop_avg_image()
+                sensor.ref_GRAY = cv2.cvtColor(sensor.ref, cv2.COLOR_BGR2GRAY)
+                print("[capture] reference updated - resuming live stream")
+                return True
+            except (RuntimeError, cv2.error) as exc:
+                print(f"[capture] reference capture failed ({exc}); retrying ...")
+                sensor.cap.release()
+        # Re-push the blank frame occasionally so a viewer that
+        # (re)connects mid-outage also sees the disconnected state.
+        if time.monotonic() - last_blank > 2.0:
+            _push_status_frame(sensor, vws, status=1)
+            last_blank = time.monotonic()
+        time.sleep(poll_s)
+    return False
+
+
 def _drive_live(sensor, vws, target_fps: float, stop: threading.Event = None) -> None:
     interval = 1.0 / target_fps
+    none_streak = 0
     while sensor.cap.isOpened():
         if stop is not None and stop.is_set():
             break
         t0 = time.monotonic()
-        img = sensor.get_rectify_crop_image()
+        try:
+            img = sensor.get_rectify_crop_image()
+        except (TypeError, IndexError, cv2.error):
+            # cap.read() returned no frame; get_raw_image() then feeds
+            # None into the rectify index and raises before returning.
+            img = None
         if img is None:
+            # An occasional dropped frame is normal; a sustained streak
+            # means the camera was unplugged -> blank + wait for replug.
+            none_streak += 1
+            if none_streak >= 10:
+                if not _recover_connection(sensor, vws, stop):
+                    break
+                none_streak = 0
+                continue
             time.sleep(interval)
             continue
+        none_streak = 0
         _process_and_push(sensor, vws, img)
         cv2.waitKey(1)
         dt = time.monotonic() - t0

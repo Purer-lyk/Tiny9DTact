@@ -13,13 +13,13 @@ class Camera:
         self.raw_img_width = camera_setting['resolution'][0]
         self.raw_img_height = camera_setting['resolution'][1]
         fps = camera_setting['fps']
-        self.cap = cv2.VideoCapture(camera_channel)
-        if self.cap.isOpened():
+        self._camera_channel = camera_channel
+        self._camera_fps = fps
+        self.cap = cv2.VideoCapture()  # placeholder; opened below
+        if self.open_capture():
             print('------Camera is open--------')
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_img_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_img_height)
-        self.cap.set(cv2.CAP_PROP_FPS, fps)
-        self.cap.set(cv2.CAP_PROP_EXPOSURE, -7)
+        else:
+            print('------Camera failed to open--------')
 
         calibration_root_dir = cfg['calibration_root_dir']
         self.calibration_sensor_dir = calibration_root_dir + '/sensor_' + str(sensor_id)
@@ -53,6 +53,23 @@ class Camera:
                         int(center_position[1] - self.crop_img_width / (self.col_points-1) * (self.col_points//2))
             self.width_end = int(center_position[1] + self.crop_img_width / 2) if self.col_points % 2 == 1 else \
                         int(center_position[1] + self.crop_img_width / (self.col_points-1) * (self.col_points//2 - 1))
+
+    def open_capture(self):
+        """(Re)open the capture device with the configured settings.
+
+        Used once at construction time and again to recover after the
+        USB camera is unplugged and re-attached. Returns True when the
+        device opened successfully.
+        """
+        self.cap.release()
+        self.cap = cv2.VideoCapture(self._camera_channel)
+        if not self.cap.isOpened():
+            return False
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_img_width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_img_height)
+        self.cap.set(cv2.CAP_PROP_FPS, self._camera_fps)
+        self.cap.set(cv2.CAP_PROP_EXPOSURE, -7)
+        return True
 
     def get_raw_image(self):
         src = self.cap.read()[1]

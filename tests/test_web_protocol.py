@@ -21,6 +21,7 @@ def test_round_trip_flat():
     assert decoded["pixel_per_mm"] == pytest.approx(0.1, abs=1e-5)
     assert decoded["max_depth"] == 0.0
     assert decoded["contact_center_mm"] == (None, None)
+    assert decoded["status"] == 0
     assert decoded["height_map"].shape == (20, 30)  # H, W
     assert np.allclose(decoded["height_map"], 0.0)
 
@@ -67,6 +68,29 @@ def test_round_trip_no_contact_center():
     blob = _encode_frame(h, readings, fps=30.0, depth_max=0.5, frame_index=0)
     decoded = _decode_frame(blob)
     assert decoded["contact_center_mm"] == (None, None)
+
+
+def test_round_trip_status():
+    """Disconnect (1) / reconnecting (2) blank frames survive the
+    round trip; the status byte must be preserved and the height data
+    must stay 2-byte aligned behind the padded 50-byte header."""
+    h = np.zeros((6, 8), dtype=np.float32)
+    readings = {
+        "max_depth": 0.0,
+        "contact_area_mm2": 0.0,
+        "contact_center_mm": (None, None),
+        "pixel_per_mm": 0.1,
+        "status": 1,
+    }
+    blob = _encode_frame(h, readings, fps=0.0, depth_max=0.5, frame_index=3)
+    decoded = _decode_frame(blob)
+    assert decoded["status"] == 1
+    assert np.allclose(decoded["height_map"], 0.0)
+
+    readings["status"] = 2
+    blob = _encode_frame(h, readings, fps=0.0, depth_max=0.5, frame_index=4)
+    decoded = _decode_frame(blob)
+    assert decoded["status"] == 2
 
 
 def test_round_trip_magic():

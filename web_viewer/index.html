@@ -135,6 +135,7 @@
   <div class="kv-row"><span class="k">Render FPS</span><span class="v" id="r-rfps">—</span></div>
   <div class="kv-row"><span class="k">Latency</span><span class="v" id="r-lat">—</span></div>
   <div class="kv-row"><span class="k">GPU</span><span class="v" id="r-gpu" style="font-size:10px">—</span></div>
+  <div class="kv-row"><span class="k">Sensor</span><span class="v" id="r-status">—</span></div>
 
   <h2>View</h2>
   <div class="btn-grid">
@@ -185,6 +186,9 @@ const COLOR_GAMMA = 0.75;
 // ----- State -----
 const state = {
   connected: false,
+  // Camera-side status from the last frame (see decodeFrame): true
+  // while unplugged/reconnecting, so the mesh painter blacks out.
+  disconnected: false,
   ws: null,
   W: 0,
   H: 0,
@@ -518,6 +522,19 @@ function updateMesh(heightFlat, depth_max) {
   if (!state.geometry) return;
   const pos = state.geometry.attributes.position;
   const col = state.geometry.attributes.color;
+  if (state.disconnected) {
+    // Camera unplugged: the server sends zero heights with a status
+    // flag; render a flat, unlit-black plane instead of the colormap
+    // so the outage is obvious at a glance.
+    for (let i = 0; i < pos.count; i++) {
+      pos.setZ(i, 0);
+      col.setXYZ(i, 0, 0, 0);
+    }
+    pos.needsUpdate = true;
+    col.needsUpdate = true;
+    updateGridNormals(heightFlat);
+    return;
+  }
   for (let i = 0; i < pos.count; i++) {
     const z = heightFlat[i] * Z_SCALE;
     pos.setZ(i, z);
@@ -622,6 +639,18 @@ function updateDmCanvas(heightFlat, depth_max) {
   ctx.putImageData(img, 0, 0);
 }
 
+// Camera-side outage: fill the 2D map with plain black (not the
+// deep-blue "no contact" colour, which would read as a live flat
+// sensor).
+function blackOutDmCanvas() {
+  ensureDmCanvas();
+  const data = state.dm_image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; data[i + 3] = 255;
+  }
+  state.dm_ctx.putImageData(state.dm_image, 0, 0);
+}
+
 // ----- View presets -----
 // Each preset sets the camera at a fixed position relative to the
 // sensor centre. We destroy and rebuild OrbitControls because
@@ -711,6 +740,20 @@ function updateReadings(r) {
     state.raf_ema ? state.raf_ema.toFixed(0) : '—';
   document.getElementById('r-lat').textContent = (state.latency_ms != null)
     ? state.latency_ms.toFixed(0) + ' ms' : '—';
+  // Sensor state chip (0 live / 1 unplugged / 2 reconnecting).
+  const st = document.getElementById('r-status');
+  if (st) {
+    if (r.status === 1) {
+      st.textContent = 'UNPLUGGED';
+      st.style.color = '#ff3b30';
+    } else if (r.status === 2) {
+      st.textContent = 'RECONNECTING';
+      st.style.color = '#ff9f0a';
+    } else {
+      st.textContent = 'LIVE';
+      st.style.color = '#30d158';
+    }
+  }
   // Update the depth-map colour-bar labels: top of the bar is the
   // current depth_max, bottom is 0.
   const dmax = r.depth_max || 0;
@@ -730,10 +773,31 @@ function applyPending() {
     state.latency_ms = Date.now() - f.timestamp_ms;
   }
   ensureMesh(f.W, f.H, f.pixel_per_mm);
+  // Status: 0 = live, 1 = camera unplugged, 2 = re-connected and
+  // re-capturing the reference. Non-zero blanks both views and
+  // resets the temporal filter so the new session (with its fresh
+  // reference frame) starts from a clean slate.
+  if (f.status) {
+    state.disconnected = true;
+    state.ema_height = null;  // reseed EMA on the next live frame
+    updateMesh(f.height_map, f.depth_max);
+    blackOutDmCanvas();
+    updateReadings(f);
+    setStatus(
+      f.status === 1
+        ? 'sensor unplugged — plug it back in to resume'
+        : 'sensor re-detected — capturing reference…',
+      true
+    );
+    return;
+  }
+  const was_offline = state.disconnected;
+  state.disconnected = false;
   const h = denoiseHeight(f.height_map);
   updateMesh(h, f.depth_max);
   updateDmCanvas(h, f.depth_max);
   updateReadings(f);
+  if (was_offline) setStatus('connected');
 }
 
 function animate() {
@@ -781,7 +845,9 @@ animate();
 // ----- WebSocket wire protocol -----
 const MAGIC = 0x395D534D;
 function decodeFrame(data) {
-  if (data.byteLength < 48) return null;
+  // Header is 50 bytes: 48 legacy fields + uint8 status + uint8 pad
+  // (the pad keeps the uint16 height array 2-byte aligned).
+  if (data.byteLength < 50) return null;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const magic = view.getUint32(0, true);
   if (magic !== MAGIC) return null;
@@ -796,8 +862,10 @@ function decodeFrame(data) {
   const cy = view.getFloat32(36, true);
   const fps = view.getFloat32(40, true);
   const depth_max = view.getFloat32(44, true);
+  // 0 = live, 1 = camera unplugged, 2 = re-connected, acquiring ref.
+  const status = view.getUint8(48);
   const u16 = new Uint16Array(
-    data.buffer, data.byteOffset + 48, W * H
+    data.buffer, data.byteOffset + 50, W * H
   );
   // Decode back to float32 mm.
   // Wire format is C-order: height_map[row * W + col], row 0 is the
@@ -821,7 +889,7 @@ function decodeFrame(data) {
     max_depth,
     contact_area_mm2: area,
     contact_center_mm: (cxM < 0 || cy < 0) ? null : [cxM, cy],
-    fps, depth_max,
+    fps, depth_max, status,
     height_map,
   };
 }

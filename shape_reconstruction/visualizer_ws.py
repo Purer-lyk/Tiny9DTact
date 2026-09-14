@@ -36,6 +36,7 @@ def _encode_frame(
     fps: float,
     depth_max: float,
     frame_index: int,
+    status: int = None,
 ) -> bytes:
     """Serialize a single frame to bytes.
 
@@ -52,9 +53,15 @@ def _encode_frame(
         float32  cy (or -1 if no contact)
         float32  fps
         float32  depth_max
+        uint8    status (0 live, 1 camera unplugged, 2 reconnecting)
+        uint8    pad (keeps the height array 2-byte aligned)
         uint16[] height_map (H x W, depth_mm * 100)
     """
     h, w = height_map.shape
+    # Status can be passed explicitly or carried inside readings;
+    # WebSocketVisualizer.update() does the latter.
+    if status is None:
+        status = int(readings.get("status", 0))
     # depth in mm * 100, clipped to uint16
     h_int = np.clip(height_map * 100.0, 0, 65535).astype(np.uint16)
     cx, cy = readings.get("contact_center_mm", (None, None))
@@ -63,7 +70,7 @@ def _encode_frame(
     cx = cx if cx is not None else -1.0
     cy = cy if cy is not None else -1.0
     header = struct.pack(
-        "<IIdHHfffffff",
+        "<IIdHHfffffffBx",
         MAGIC,
         frame_index,
         time.time() * 1000.0,
@@ -75,6 +82,7 @@ def _encode_frame(
         float(cy),
         float(fps),
         float(depth_max),
+        int(status),
     )
     return header + h_int.tobytes()
 
@@ -82,13 +90,13 @@ def _encode_frame(
 def _decode_frame(data: bytes) -> dict:
     """Parse a frame encoded by _encode_frame. Used by tests and
     by the browser JS (mirrored there)."""
-    if len(data) < 48:
+    if len(data) < 50:
         raise ValueError("Frame too short")
-    magic, frame_index, ts_ms, h, w, ppm, max_d, area, cx, cy, fps, dmax = \
-        struct.unpack("<IIdHHfffffff", data[:48])
+    magic, frame_index, ts_ms, h, w, ppm, max_d, area, cx, cy, fps, dmax, status = \
+        struct.unpack("<IIdHHfffffffBx", data[:50])
     if magic != MAGIC:
         raise ValueError(f"Bad magic 0x{magic:08x}")
-    h_int = np.frombuffer(data[48:], dtype=np.uint16).reshape(h, w).copy()
+    h_int = np.frombuffer(data[50:], dtype=np.uint16).reshape(h, w).copy()
     return {
         "frame_index": frame_index,
         "timestamp_ms": ts_ms,
@@ -100,6 +108,7 @@ def _decode_frame(data: bytes) -> dict:
         "contact_center_mm": (cx if cx >= 0 else None, cy if cy >= 0 else None),
         "fps": fps,
         "depth_max": dmax,
+        "status": status,
         "height_map": h_int.astype(np.float32) / 100.0,
     }
 
@@ -184,6 +193,7 @@ class WebSocketVisualizer:
             fps=self._ema_fps,
             depth_max=max(readings["max_depth"], 0.5),
             frame_index=self._frame_index,
+            status=int(readings.get("status", 0)),
         )
         self._frame_index += 1
 
