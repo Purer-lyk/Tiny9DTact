@@ -141,16 +141,6 @@ USB 相机 ──► Camera (矫正+裁剪) ──► Sensor (高度图) ──�
 | 48 | u8 | status（0 实时 / 1 已拔线 / 2 重连中） |
 | 49 | u8 | pad（保证深度数组 2 字节对齐） |
 
-详细设计取舍见 [docs/superpowers/specs/2026-07-29-web-viewer-design.md](docs/superpowers/specs/2026-07-29-web-viewer-design.md)。
-
-## 测试
-
-```bash
-python -m pytest tests/ -q
-```
-
-覆盖线协议编解码往返（含断连状态帧）与读数计算（最大深度 / 接触面积 / 接触中心）。
-
 ## 目录结构
 
 ```
@@ -165,13 +155,6 @@ force_estimation/           6D 力估计（继承自上游，需 ROS，本环境
 data_collection/           力数据采集（同上）
 model/ saved_models/        力估计网络定义与预训练权重（Densenet-169）
 ```
-
-## 仓库约定
-
-- 默认分支 `main`；功能分支 `feat/<topic>`、修复 `fix/<topic>`、文档 `docs/<topic>`
-- 行尾统一 LF（`.gitattributes`），勿提交 CRLF
-- 提交由 `ClaudePartner` 机器人账号代为完成，仓库所有者负责审核与推送（GitHub Desktop）
-- 标定数据（`calibration/`）与预训练权重（`saved_models/`）随仓库管理
 
 ## 上游与引用
 
