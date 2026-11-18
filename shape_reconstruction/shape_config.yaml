@@ -28,6 +28,9 @@ depth_calibration:
   show_circle_detection: True
   Pixel_to_Depth_path: /Pixel_to_Depth.npy
 
+depth_deblur:
+  checkpoint: ./saved_models/NAFNet-GoPro-width32.pth
+
 sensor_reconstruction:
   lighting_threshold: 2
   kernel_list:

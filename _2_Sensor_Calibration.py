@@ -3,14 +3,17 @@ import numpy as np
 import cv2
 import yaml
 import os
+import argparse
 from shape_reconstruction import Sensor
 from shape_reconstruction.depth_preprocessing import darker_gray_difference
 
 
 class SensorCalibration:
-    def __init__(self, cfg_path):
+    def __init__(self, cfg_path, deblur=False):
         f = open(cfg_path, 'r+', encoding='utf-8')
         cfg = yaml.load(f, Loader=yaml.FullLoader)
+        if deblur:
+            cfg['depth_deblur']['enabled'] = True
         self.sensor = Sensor(cfg, calibrated=False)
         if not os.path.exists(self.sensor.depth_calibration_dir):
             os.makedirs(self.sensor.depth_calibration_dir)
@@ -18,23 +21,31 @@ class SensorCalibration:
         self.BallRad = depth_calibration['BallRad']
         self.circle_detection_gray = depth_calibration['circle_detect_gray']
         self.show_circle_detection = depth_calibration['show_circle_detection']
+        self.capture_dir = self.sensor.depth_calibration_dir
+        if self.sensor.depth_deblur is not None:
+            self.capture_dir = os.path.join(self.capture_dir, self.sensor.depth_deblur.tag)
+            os.makedirs(self.capture_dir, exist_ok=True)
 
     def run(self):
         print("DON'T touch the sensor surface!!!!!")
         print('Please press "y" to save the reference image!')
         ref = self.sensor.get_raw_avg_image()
-        cv2.imwrite(self.sensor.depth_calibration_dir + '/ref.png', ref)
+        cv2.imwrite(self.capture_dir + '/ref.png', ref)
         rc_ref = self.sensor.rectify_crop_image(ref)
-        cv2.imwrite(self.sensor.depth_calibration_dir + '/rectify_crop_ref.png', rc_ref)
+        cv2.imwrite(self.capture_dir + '/rectify_crop_ref.png', rc_ref)
         print('Reference image saved!')
         print('Please press the ball on the sensor and press "y" to save the sample image!')
         sample = self.sensor.get_raw_avg_image()
-        cv2.imwrite(self.sensor.depth_calibration_dir + '/sample.png', sample)
+        cv2.imwrite(self.capture_dir + '/sample.png', sample)
         rc_sample = self.sensor.rectify_crop_image(sample)
-        cv2.imwrite(self.sensor.depth_calibration_dir + '/rectify_crop_sample.png', rc_sample)
+        cv2.imwrite(self.capture_dir + '/rectify_crop_sample.png', rc_sample)
         print('Sample image saved!')
 
-        gray_list, depth_list = self.mapping_data_collection(rc_sample, rc_ref)
+        contact_diff = (darker_gray_difference(rc_ref, rc_sample)
+                        if self.sensor.depth_deblur is not None else None)
+        gray_list, depth_list = self.mapping_data_collection(
+            self.sensor.prepare_depth_image(rc_sample), self.sensor.prepare_depth_image(rc_ref),
+            contact_diff=contact_diff)
         gray_list = np.array(gray_list)
         depth_list = np.array(depth_list)
         Pixel_to_Depth = self.get_list(gray_list, depth_list)
@@ -82,14 +93,14 @@ class SensorCalibration:
         else:
             return (0, 0), 0
 
-    def mapping_data_collection(self, img, ref):
+    def mapping_data_collection(self, img, ref, *, contact_diff=None):
         gray_list = []
         depth_list = []
         diff = darker_gray_difference(ref, img)
         cv2.imshow('ref', ref)
         cv2.imshow('img', img)
         cv2.imshow('diff', diff.astype(np.uint8))
-        center, detect_radius_p = self.circle_detection(diff)
+        center, detect_radius_p = self.circle_detection(diff if contact_diff is None else contact_diff)
         if detect_radius_p <= 0:
             raise ValueError('No valid ball contact detected; capture a new calibration sample.')
         if detect_radius_p * self.sensor.pixel_per_mm >= self.BallRad:
@@ -144,5 +155,7 @@ class SensorCalibration:
 
 if __name__ == '__main__':
     config_path = './shape_reconstruction/shape_config.yaml'
-    depth_calibration = SensorCalibration(config_path)
+    parser = argparse.ArgumentParser(description='9DTact depth calibration')
+    parser.add_argument('--deblur', action='store_true', help='Calibrate with NAFNet enabled')
+    depth_calibration = SensorCalibration(config_path, deblur=parser.parse_args().deblur)
     depth_calibration.run()

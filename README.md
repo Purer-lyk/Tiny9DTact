@@ -69,6 +69,21 @@ python _2_Sensor_Calibration.py
 
 先采无接触参考，再用钢球以不同力度按压采样，生成 `depth_calibration/Pixel_to_Depth.npy`（灰度差-深度查找表）。
 
+### 可选：逐帧去模糊
+
+从源码运行时可以启用 [NAFNet GoPro width-32](https://github.com/megvii-research/NAFNet)。模型处理矫正裁剪后的彩色帧，保留像素尺寸，然后再做灰度差和深度查表。参考帧和标定帧使用同一模型。需要 PyTorch；可用 CUDA 时使用 GPU，否则使用 CPU。
+
+从上游 README 的 GoPro width-32 项下载 `NAFNet-GoPro-width32.pth`，放入 `saved_models/`，然后执行：
+
+```powershell
+python _2_Sensor_Calibration.py --deblur
+python _3_Shape_Reconstruction.py --deblur
+```
+
+增强模式仍用未增强图像确认钢球的接触圆，用增强图像生成对应的灰度差。标定图及查找表单独保存，文件名区分权重和推理精度。切换权重或 CPU/GPU 后需使用相应的增强标定表；无需重做相机标定。不带 `--deblur` 可直接回到原始查找表。现有打包版不带 PyTorch 去模糊功能。
+
+GoPro 权重针对运动模糊。接入后先比较细线轮廓、无接触误报和已知压深下的毫米读数，模型推理也会降低帧率。
+
 ## 运行模式
 
 | 命令 | 说明 |
@@ -83,7 +98,7 @@ python _2_Sensor_Calibration.py
 
 **3D 视图**（左侧）：左键拖拽旋转、滚轮缩放、右键平移；右侧按钮切换预设视角（Default 45° / Top / Side / Reset）。坐标轴位于网格左下角，显示方向与物理传感器一致（相机镜像已在解码端翻转）。
 
-**2D 深度图**（右上）：俯视深度热图 + 右侧色标（顶部为当前 `depth_max`）。
+**2D 深度图**（右上）：默认用自动色标显示平滑增强后的深度。勾选 **Detail mode (raw depth)** 后，直接用后端深度绘制热图，拖动 **Contrast multiplier** 滑块（1×–6×）调整显示对比度。倍数越高，色标中间附近的深度差越明显，两端更容易达到最低色或最高色。设置只影响 2D 显示。
 
 **读数面板**：Max depth（当前帧最大深度 mm）、Contact area（接触面积 mm²）、FPS（采集端帧率）、Render FPS（渲染帧率）、Latency（编码到上屏延迟 ms）、GPU（实际 WebGL 渲染器，若显示 SwiftShader 说明落到了软件渲染）、Sensor 状态灯（LIVE / UNPLUGGED / RECONNECTING）。
 

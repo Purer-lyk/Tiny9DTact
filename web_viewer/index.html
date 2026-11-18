@@ -38,6 +38,11 @@
   h2 { font-size: 13px; font-weight: 600; color: var(--text); margin: 16px 0 8px 0; }
   h2:first-child { margin-top: 0; }
   .dm-wrap { margin-bottom: 4px; }
+  .dm-mode { display: block; margin: 8px 0; font-size: 12px; }
+  .dm-contrast { font-size: 12px; }
+  .dm-contrast-label { display: flex; justify-content: space-between; }
+  .dm-contrast output { font-family: Consolas, monospace; }
+  .dm-contrast input { width: 100%; margin: 2px 0 0; accent-color: var(--accent); }
   .dm-flex {
     display: flex; align-items: stretch; gap: 8px;
   }
@@ -127,6 +132,16 @@
         </div>
       </div>
     </div>
+    <label class="dm-mode">
+      <input id="dm-detail" type="checkbox" /> Detail mode (raw depth)
+    </label>
+    <div class="dm-contrast" id="dm-contrast" hidden>
+      <div class="dm-contrast-label">
+        <label for="dm-gain">Contrast multiplier</label>
+        <output id="dm-gain-value" for="dm-gain">1.0×</output>
+      </div>
+      <input id="dm-gain" type="range" min="1" max="6" step="0.1" value="1" aria-valuetext="1.0×" />
+    </div>
   </div>
 
   <h2>Readings</h2>
@@ -202,6 +217,9 @@ const state = {
   mesh: null,
   geometry: null,
   dm_canvas: null,
+  dm_last_frame: null,
+  dm_detail: false,
+  dm_gain: 1,
   dm_ctx: null,
   dm_image: null,
   // Latest fully-decoded frame; the rAF loop reads and clears this
@@ -615,7 +633,40 @@ function ensureDmCanvas() {
   state.dm_ctx.putImageData(state.dm_image, 0, 0);
 }
 
-function updateDmCanvas(heightFlat, depth_max) {
+function depthColorIndex(depth, min, max, gamma) {
+  const normalized = Math.max(0, Math.min(1, (depth - min) / (max - min)));
+  return Math.round(Math.pow(normalized, gamma) * 255) * 3;
+}
+
+function renderDepthMap() {
+  const frame = state.dm_last_frame;
+  const fullMax = frame?.depthMax ?? 0;
+  const center = fullMax / 2;
+  const halfWidth = state.dm_detail ? center / state.dm_gain : center;
+  const min = center - halfWidth;
+  const max = center + halfWidth;
+  const gamma = state.dm_detail ? 1 : COLOR_GAMMA;
+  document.getElementById('dm-bar-top').textContent = max.toFixed(2);
+  document.getElementById('dm-bar-mid').textContent = (min + (max - min) * 0.5 ** (1 / gamma)).toFixed(2);
+  document.getElementById('dm-bar-bot').textContent = min.toFixed(2);
+  if (frame) updateDmCanvas(state.dm_detail ? frame.raw : frame.filtered, min, max, gamma);
+}
+
+function updateDepthMapControls() {
+  const slider = document.getElementById('dm-gain');
+  state.dm_detail = document.getElementById('dm-detail').checked;
+  state.dm_gain = slider.valueAsNumber;
+  const multiplier = `${state.dm_gain.toFixed(1)}×`;
+  document.getElementById('dm-contrast').hidden = !state.dm_detail;
+  document.getElementById('dm-gain-value').value = multiplier;
+  slider.setAttribute('aria-valuetext', multiplier);
+  renderDepthMap();
+}
+
+document.getElementById('dm-detail').addEventListener('change', updateDepthMapControls);
+document.getElementById('dm-gain').addEventListener('input', updateDepthMapControls);
+
+function updateDmCanvas(heightFlat, min, max, gamma) {
   ensureDmCanvas();
   const c = state.dm_canvas;
   const ctx = state.dm_ctx;
@@ -633,8 +684,7 @@ function updateDmCanvas(heightFlat, depth_max) {
     for (let x = 0; x < outW; x++) {
       const srcX = Math.min(W - 1, Math.floor(x * W / outW));
       const z = heightFlat[srcY * W + srcX];
-      const t = Math.pow(z / depth_max, COLOR_GAMMA);
-      const idx = Math.max(0, Math.min(255, Math.round(t * 255))) * 3;
+      const idx = depthColorIndex(z, min, max, gamma);
       const off = (y * outW + x) * 4;
       data[off] = JET[idx];
       data[off + 1] = JET[idx + 1];
@@ -791,12 +841,6 @@ function updateReadings(r) {
       st.style.color = '#30d158';
     }
   }
-  // Update the depth-map colour-bar labels: top of the bar is the
-  // current depth_max, bottom is 0.
-  const dmax = r.depth_max || 0;
-  document.getElementById('dm-bar-top').textContent = dmax.toFixed(1);
-  document.getElementById('dm-bar-mid').textContent = (dmax / 2).toFixed(1);
-  document.getElementById('dm-bar-bot').textContent = '0.0';
 }
 
 // ----- Frame loop -----
@@ -817,8 +861,10 @@ function applyPending() {
   if (f.status) {
     state.disconnected = true;
     state.ema_height = null;  // reseed EMA on the next live frame
+    state.dm_last_frame = null;
     updateMesh(f.height_map, f.depth_max);
     blackOutDmCanvas();
+    renderDepthMap();
     updateReadings(f);
     setStatus(
       f.status === 1
@@ -832,7 +878,8 @@ function applyPending() {
   state.disconnected = false;
   const h = denoiseHeight(f.height_map);
   updateMesh(h, f.depth_max);
-  updateDmCanvas(h, f.depth_max);
+  state.dm_last_frame = { raw: f.height_map, filtered: h, depthMax: f.depth_max };
+  renderDepthMap();
   updateReadings(f);
   if (was_offline) setStatus('connected');
 }

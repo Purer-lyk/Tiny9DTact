@@ -2,17 +2,30 @@ import numpy as np
 import cv2
 from shape_reconstruction import Camera
 import yaml
+from pathlib import Path
+from .deblur import DepthDeblur
 from .depth_preprocessing import darker_gray_difference
 
 
 class Sensor(Camera):
     def __init__(self, cfg, calibrated=True, ref=None):
+        deblur_cfg = cfg.get('depth_deblur', {})
+        self.depth_deblur = (DepthDeblur(deblur_cfg['checkpoint'])
+                             if deblur_cfg.get('enabled', False) else None)
         super().__init__(cfg)
         depth_calibration = cfg['depth_calibration']
         self.depth_calibration_dir = self.calibration_sensor_dir + \
             depth_calibration['depth_calibration_dir']
         self.Pixel_to_Depth_path = self.depth_calibration_dir + \
             depth_calibration['Pixel_to_Depth_path']
+        if self.depth_deblur is not None:
+            lut_path = Path(self.Pixel_to_Depth_path)
+            self.Pixel_to_Depth_path = str(lut_path.with_name(
+                f'{lut_path.stem}-{self.depth_deblur.tag}{lut_path.suffix}'))
+            if calibrated and not Path(self.Pixel_to_Depth_path).is_file():
+                raise FileNotFoundError(
+                    f'Missing enhanced depth LUT: {self.Pixel_to_Depth_path}. '
+                    'Run python _2_Sensor_Calibration.py --deblur first.')
 
         if calibrated:
             self.Pixel_to_Depth = np.load(self.Pixel_to_Depth_path)
@@ -23,10 +36,8 @@ class Sensor(Camera):
                 # Automatic reference capture: skip the camera warm-up
                 # frames, then average 10 frames once the image is
                 # stable (no keypress needed).
-                self.ref = self.get_stable_rectify_crop_avg_image()
-            else:
-                self.ref = ref
-            self.ref_GRAY = cv2.cvtColor(self.ref, cv2.COLOR_BGR2GRAY)
+                ref = self.get_stable_rectify_crop_avg_image()
+            self.set_reference(ref)
             sensor_reconstruction = cfg['sensor_reconstruction']
             self.lighting_threshold = sensor_reconstruction['lighting_threshold']
             self.kernel_list = sensor_reconstruction['kernel_list']
@@ -52,19 +63,38 @@ class Sensor(Camera):
             self.mixed_visualization = np.zeros_like(self.ref)
             self.mixed_visualization[::, ::, 0] = self.ref_GRAY
 
+    def prepare_depth_image(self, image):
+        """Apply the configured depth transform to a rectified BGR image."""
+        if self.depth_deblur is not None:
+            return self.depth_deblur(image)
+        return image
+
+    def set_reference(self, image):
+        depth_image = self.prepare_depth_image(image)
+        self.ref = image
+        self.ref_GRAY = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        self.depth_ref_gray = (self.ref_GRAY if depth_image is image else
+                               cv2.cvtColor(depth_image, cv2.COLOR_BGR2GRAY))
+
+    def image_2_height_map(self, image):
+        img_gray = cv2.cvtColor(self.prepare_depth_image(image), cv2.COLOR_BGR2GRAY)
+        return self.raw_image_2_height_map(img_gray)
+
     def raw_image_2_height_map(self, img_GRAY):
-        diff = darker_gray_difference(self.ref_GRAY, img_GRAY)
+        """Reconstruct from grayscale after depth preprocessing."""
+        diff = darker_gray_difference(getattr(self, 'depth_ref_gray', self.ref_GRAY), img_GRAY)
         # Retain the existing noise floor, but apply it explicitly in float.
         baseline_index = min(int(self.lighting_threshold), self.max_index)
         diff = np.clip(diff, baseline_index, self.max_index)
         # cv2.imshow('diff', diff)
-        diff = cv2.GaussianBlur(diff.astype(np.float32), (5, 5), 0).astype(int)
+        # diff = cv2.GaussianBlur(diff.astype(np.float32), (5, 5), 0).astype(int)
+        diff = diff.astype(int)
         # print(self.Pixel_to_Depth[diff])
         height_map = self.Pixel_to_Depth[diff] - \
             self.Pixel_to_Depth[baseline_index]
-        for kernel in self.kernel_list:
-            height_map = cv2.GaussianBlur(
-                height_map.astype(np.float32), (kernel, kernel), 0)
+        # for kernel in self.kernel_list:
+        #     height_map = cv2.GaussianBlur(
+        #         height_map.astype(np.float32), (kernel, kernel), 0)
         return height_map
 
     def raw_image_2_representation(self, img_GRAY):
@@ -98,11 +128,7 @@ class Sensor(Camera):
         return vis_img
 
     def get_height_map(self):
-        img = self.get_rectify_crop_image()
-        img_GRAY = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # img = cv2.flip(self.get_rectify_crop_image(), 1)
-        height_map = self.raw_image_2_height_map(img_GRAY)
-        return height_map
+        return self.image_2_height_map(self.get_rectify_crop_image())
 
     def height_map_2_depth_map(self, height_map):
         contact_show = np.zeros_like(height_map)

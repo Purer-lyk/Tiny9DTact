@@ -36,6 +36,7 @@ release/*.zip
 
 # Logs and temp outputs (keep calibration data and saved_models)
 *.log
+/saved_models/NAFNet-GoPro-width32.pth
 
 # Local smoke tests / scratch sandboxes (not part of the codebase)
 # Anchored to the directory root so they don't swallow nested tests/.

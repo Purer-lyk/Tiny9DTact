@@ -86,8 +86,7 @@ class CameraControl:
 
 def _process_and_push(sensor, vws, img):
     """Full pipeline for one BGR frame: height map -> readings -> ws."""
-    img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h = sensor.raw_image_2_height_map(img_gray)
+    h = sensor.image_2_height_map(img)
     h = sensor.expand_image(h)
     readings = compute_readings(
         h, pixel_per_mm=float(sensor.pixel_per_mm), contact_threshold=0.05
@@ -243,8 +242,7 @@ def _recover_connection(sensor, vws, stop, control,
                     print(f"[capture] channel {ch}: sensor identified "
                           f"(ncc={score:.2f})")
                 _push_status_frame(sensor, vws, status=2)
-                sensor.ref = sensor.get_stable_rectify_crop_avg_image()
-                sensor.ref_GRAY = cv2.cvtColor(sensor.ref, cv2.COLOR_BGR2GRAY)
+                sensor.set_reference(sensor.get_stable_rectify_crop_avg_image())
                 if control is not None:
                     control.set_active(sensor._camera_channel)
                 print("[capture] reference updated - resuming live stream")
@@ -521,6 +519,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="9DTact Web Viewer")
     parser.add_argument("--replay", metavar="DIR", help="Replay frame_*.png images")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--deblur", action="store_true",
+                        help="Run NAFNet on every depth input frame (requires a matching depth LUT)")
     parser.add_argument("--browser", action="store_true",
                         help="Open in the system browser instead of a desktop window")
     args = parser.parse_args()
@@ -538,6 +538,10 @@ if __name__ == '__main__':
 
     with open("./shape_reconstruction/shape_config.yaml", encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
+    if args.deblur:
+        if getattr(sys, "frozen", False):
+            parser.error("--deblur requires running this script with PyTorch in Python")
+        cfg['depth_deblur']['enabled'] = True
 
     # Default: connect the configured channel (camera_channel: 0).
     # The window opens even when the camera is not attached yet -- it

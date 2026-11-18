@@ -41,11 +41,8 @@ try:
 except Exception:  # pragma: no cover
     vispy = None
 
-# PyQtGraph is the default backend used by the live visualizer.
-try:
-    import pyqtgraph  # noqa: F401
-except Exception:  # pragma: no cover
-    pyqtgraph = None
+_GUI_NOT_LOADED = object()
+pyqtgraph = _GUI_NOT_LOADED
 
 
 # ----- Legacy Visualizer (point cloud) ----------------------------------------
@@ -199,6 +196,12 @@ def require_gui() -> None:
 
     The default backend is PyQtGraph + PyQt5 (see visualizer_pg.py).
     """
+    global pyqtgraph
+    if vispy is None and pyqtgraph is _GUI_NOT_LOADED:
+        try:
+            import pyqtgraph
+        except Exception:  # pragma: no cover
+            pyqtgraph = None
     if vispy is None and pyqtgraph is None:
         raise RuntimeError(
             "A GUI backend is required. Install one of:\n"
