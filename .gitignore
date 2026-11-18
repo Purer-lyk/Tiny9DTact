@@ -29,6 +29,11 @@ build/
 dist/
 *.egg
 
+# PyInstaller release output (built locally by build_release.bat;
+# keep the release README and notes, ignore the binaries)
+release/Tiny9DTact/
+release/*.zip
+
 # Logs and temp outputs (keep calibration data and saved_models)
 *.log
 

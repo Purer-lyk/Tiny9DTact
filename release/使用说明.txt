@@ -1,0 +1,37 @@
+Tiny9DTact 视触觉传感器实时三维重建 — 使用说明
+=================================================
+
+运行
+----
+双击 Tiny9DTact.exe。
+
+- 窗口先打开，再自动等待相机画面稳定、采集参考帧（控制台有日志），随后开始实时重建
+- 相机没插时窗口照常打开（状态灯 UNPLUGGED），插上后自动恢复
+- 运行中拔掉相机不会崩溃：画面黑屏、状态灯转红，重新插上自动识别回原来的相机（多摄像头电脑/笔记本不会误连自带摄像头）；也可点侧栏底部 Rescan 手动触发重新扫描
+- 3D 视图：左键拖拽旋转，滚轮缩放，右键平移；右侧按钮切换预设视角
+- 关闭窗口即退出
+
+要求
+----
+- Windows 10 / 11（无需安装 Python）
+- WebView2 Runtime：Win11 自带；Win10 若缺失会回退到系统浏览器，建议安装：
+  https://developer.microsoft.com/microsoft-edge/webview2/
+- 首次运行需联网（加载 three.js，之后有缓存，离线可复现）
+
+改配置（不用重新打包）
+----------------------
+- 换相机索引：编辑 shape_reconstruction\shape_config.yaml 的 camera_setting.camera_channel，重启 exe；或在界面用 Rescan 重扫
+- 换了传感器 / 重新标定后：把新的 shape_reconstruction\calibration 文件夹整个覆盖过来，重启 exe
+- 视觉调参（深度放大倍数、平滑度、锐化等）：编辑 web_viewer\index.html 顶部的常量，重启 exe
+
+目录说明
+--------
+Tiny9DTact.exe            主程序
+_internal\                程序运行库（不要删改）
+shape_reconstruction\     配置与标定数据
+web_viewer\               前端页面
+
+注意
+----
+- 杀毒软件可能对 exe 误报（PyInstaller 打包常见现象），加入信任列表即可
+- exe 旁边的三个数据文件夹必须和 exe 放在一起，单独把 exe 拷走无法运行

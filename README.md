@@ -7,7 +7,7 @@
 - **实时 3D 重建**：USB 相机 → 畸变矫正裁剪 → 像素-深度标定映射 → WebGL 网格，jet 鲜艳配色（深蓝基底）
 - **桌面应用形态**：pywebview + Edge WebView2 打包为原生窗口，不再是浏览器标签页；GPU 强制开启（绕过集成显卡黑名单）
 - **自动参考帧采集**：程序启动后自动等待画面稳定（跳过暖机帧、检测帧间差分），无需按键
-- **断线韧性**：拔掉传感器不崩溃——3D/2D 视图黑屏、状态灯转红；重新插入后自动重开相机、重采参考帧、恢复推流
+- **断线韧性**：拔掉传感器不崩溃——3D/2D 视图黑屏、状态灯转红；重新插入后自动重开相机、重采参考帧、恢复推流。多摄像头电脑（如笔记本）上自动比对画面结构识别原来的设备，不会误连自带摄像头；界面 Rescan 按钮可立即重新枚举重连
 - **毛刺抑制与轮廓增强**：时间域 EMA + 噪声底吸附 + USM 锐化 + 色彩 gamma，浅压痕（如按压字符）轮廓清晰
 - **轻量二进制协议**：WebSocket 推送 ~1.7 MB/帧的紧凑格式，带背压丢帧（慢客户端不累积延迟）
 - **工程化**：pytest 覆盖协议编解码与读数计算；设计文档见 `docs/superpowers/specs/`
@@ -43,7 +43,7 @@ pip install numpy opencv-python PyYAML websockets pywebview scipy
 python _3_Shape_Reconstruction.py
 ```
 
-启动后自动等待画面稳定并采集参考帧（控制台会打印稳定耗时），然后弹出 9DTact Shape Reconstruction 桌面窗口开始实时重建。关闭窗口即退出。
+启动后先弹出 9DTact Shape Reconstruction 桌面窗口，再自动等待画面稳定并采集参考帧（控制台会打印稳定耗时）后开始实时重建。相机没插时窗口照常打开（状态灯 UNPLUGGED），插入后自动采参考帧继续。关闭窗口即退出。
 
 ## 标定流程
 
@@ -87,7 +87,9 @@ python _2_Sensor_Calibration.py
 
 **读数面板**：Max depth（当前帧最大深度 mm）、Contact area（接触面积 mm²）、FPS（采集端帧率）、Render FPS（渲染帧率）、Latency（编码到上屏延迟 ms）、GPU（实际 WebGL 渲染器，若显示 SwiftShader 说明落到了软件渲染）、Sensor 状态灯（LIVE / UNPLUGGED / RECONNECTING）。
 
-**断连行为**：拔掉相机后 2D/3D 变黑、状态灯红色 UNPLUGGED；重新插入后转橙色 RECONNECTING，自动重采参考帧后恢复 LIVE，全程无需重启程序。
+**断连行为**：拔掉相机后 2D/3D 变黑、状态灯红色 UNPLUGGED，窗口不会退出（采集循环异常全部兜底，会自动重启）；重新插入后转橙色 RECONNECTING，自动重采参考帧后恢复 LIVE，全程无需重启程序。重连时优先尝试原通道，再扫描 0–5 号设备并与断线前的参考帧做结构比对（NCC），只接受画面一致的那个相机——笔记本自带摄像头不会被误连。
+
+**Camera 面板**（侧栏底部）：仅一个 Rescan 按钮——点击后服务端重新枚举 0–5 号设备（会短暂打开各摄像头，属正常现象），按参考帧结构比对（NCC）自动识别并重连原来的传感器、重采参考帧；没有参考帧（启动即无相机）时只尝试配置通道。默认连接 `shape_config.yaml` 的 `camera_channel`（0）。启动时相机未连接，窗口也会照常打开并等待设备（状态灯 UNPLUGGED），设备就绪后自动采集参考帧。
 
 ## 视觉调参
 
@@ -108,7 +110,7 @@ python _2_Sensor_Calibration.py
 | 字段 | 说明 |
 | --- | --- |
 | `sensor_id` | 标定数据目录编号（`calibration/sensor_<id>/`） |
-| `camera_setting.camera_channel` | 相机索引（0/1，多相机时按需修改） |
+| `camera_setting.camera_channel` | 相机索引（0/1，多相机时按需修改；配错时改配置文件重启即可） |
 | `camera_setting.resolution` / `fps` | 采集分辨率与帧率 |
 | `camera_calibration.crop_size` | 矫正后裁剪尺寸（当前 1240×690 高分辨率） |
 | `depth_calibration.BallRad` | 深度标定钢球半径 |

@@ -1,8 +1,13 @@
-"""Round-trip test for the WebSocket frame encoding."""
+"""Round-trip tests for the WebSocket frame encoding and the JSON
+client-command parser."""
 import numpy as np
 import pytest
 
-from shape_reconstruction.visualizer_ws import _encode_frame, _decode_frame
+from shape_reconstruction.visualizer_ws import (
+    _encode_frame,
+    _decode_frame,
+    parse_client_command,
+)
 
 
 def test_round_trip_flat():
@@ -105,3 +110,25 @@ def test_round_trip_magic():
     bad[0] = 0xFF
     with pytest.raises(ValueError, match="Bad magic"):
         _decode_frame(bytes(bad))
+
+
+# ----- viewer camera commands (JSON text frames) ------------------------------
+
+def test_parse_client_command_valid():
+    assert parse_client_command('{"cmd": "cameras"}') == {"cmd": "cameras"}
+    assert parse_client_command('{"cmd": "reconnect"}') == {"cmd": "reconnect"}
+    assert parse_client_command('{"cmd": "select", "index": 2}') == \
+        {"cmd": "select", "index": 2}
+    # index arrives as a string from some client paths
+    assert parse_client_command('{"cmd": "select", "index": "3"}') == \
+        {"cmd": "select", "index": 3}
+
+
+def test_parse_client_command_invalid():
+    # not JSON / not an object / unknown cmd / missing index
+    assert parse_client_command("hello") is None
+    assert parse_client_command("[1, 2, 3]") is None
+    assert parse_client_command('{"cmd": "explode"}') is None
+    assert parse_client_command('{"cmd": "select"}') is None
+    assert parse_client_command('{"cmd": "select", "index": "abc"}') is None
+    assert parse_client_command(12345) is None

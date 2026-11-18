@@ -5,6 +5,28 @@ import cv2
 import yaml
 
 
+def probe_capture_channels(max_channels=6, exclude=()):
+    """Return the indices of currently openable capture devices.
+
+    Module-level so the viewer's camera picker can enumerate devices
+    even before a Sensor exists. Opens each candidate briefly with a
+    throw-away VideoCapture; never raises.
+    """
+    found = []
+    for i in range(int(max_channels)):
+        if i in exclude:
+            continue
+        try:
+            cap = cv2.VideoCapture(i)
+            ok = cap.isOpened()
+            cap.release()
+        except Exception:
+            ok = False
+        if ok:
+            found.append(i)
+    return found
+
+
 class Camera:
     def __init__(self, cfg, calibrated=True):
         sensor_id = cfg['sensor_id']
@@ -16,6 +38,11 @@ class Camera:
         self._camera_channel = camera_channel
         self._camera_fps = fps
         self.cap = cv2.VideoCapture()  # placeholder; opened below
+        # Default: the configured channel only (shape_config.yaml
+        # camera_channel: 0). No fallback scan here -- on a laptop that
+        # would happily open the built-in webcam instead. When the
+        # device is not present yet, the caller retries until it
+        # appears (see _3_Shape_Reconstruction.py).
         if self.open_capture():
             print('------Camera is open--------')
         else:
@@ -54,22 +81,81 @@ class Camera:
             self.width_end = int(center_position[1] + self.crop_img_width / 2) if self.col_points % 2 == 1 else \
                         int(center_position[1] + self.crop_img_width / (self.col_points-1) * (self.col_points//2 - 1))
 
-    def open_capture(self):
+    def open_capture(self, channel=None):
         """(Re)open the capture device with the configured settings.
 
         Used once at construction time and again to recover after the
-        USB camera is unplugged and re-attached. Returns True when the
-        device opened successfully.
+        USB camera is unplugged and re-attached. `channel` overrides
+        the configured camera_channel (used when scanning for the
+        right device on multi-camera machines). Returns True when the
+        device opened successfully. Never raises: MSMF can throw
+        cv2.error while a device is being torn down, and callers
+        (especially the recovery loop) rely on a clean False.
         """
-        self.cap.release()
-        self.cap = cv2.VideoCapture(self._camera_channel)
+        if channel is not None:
+            self._camera_channel = int(channel)
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+        try:
+            cap = cv2.VideoCapture(self._camera_channel)
+        except Exception:
+            cap = None
+        self.cap = cap if cap is not None else cv2.VideoCapture()
         if not self.cap.isOpened():
             return False
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_img_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_img_height)
-        self.cap.set(cv2.CAP_PROP_FPS, self._camera_fps)
-        self.cap.set(cv2.CAP_PROP_EXPOSURE, -7)
+        for prop, value in (
+            (cv2.CAP_PROP_FRAME_WIDTH, self.raw_img_width),
+            (cv2.CAP_PROP_FRAME_HEIGHT, self.raw_img_height),
+            (cv2.CAP_PROP_FPS, self._camera_fps),
+            (cv2.CAP_PROP_EXPOSURE, -7),
+        ):
+            try:
+                self.cap.set(prop, value)
+            except Exception:
+                pass  # unsupported property on this device/backend
         return True
+
+    def probe_channels(self, max_channels=6, exclude=()):
+        """Return the indices of currently openable capture devices.
+
+        Thin wrapper around probe_capture_channels(); pass the index
+        currently held by self.cap in `exclude` to avoid competing for
+        it. Never raises.
+        """
+        return probe_capture_channels(max_channels=max_channels, exclude=exclude)
+
+    def quick_reference_probe(self, skip_frames=8, avg_frames=4, max_misses=4):
+        """Fast gray probe frame for camera identity verification.
+
+        Unlike get_stable_rectify_crop_avg_image() there is no
+        stability wait -- we only need *a* frame good enough to tell
+        cameras apart (cammatch compares structure, not exact pixels).
+        Raises RuntimeError when the device yields no usable frames.
+        """
+        got = []
+        skipped = 0
+        misses = 0
+        while len(got) < avg_frames:
+            try:
+                img = self.get_rectify_crop_image()
+            except (TypeError, IndexError, cv2.error):
+                # cap.read() returned nothing (unplugged mid-probe or
+                # the device is held elsewhere). Occasional drops are
+                # tolerated; a sustained streak aborts the probe.
+                misses += 1
+                if misses > max_misses:
+                    raise RuntimeError('device yields no frames')
+                time.sleep(0.02)
+                continue
+            misses = 0
+            if skipped < skip_frames:
+                skipped += 1  # discard auto-exposure warm-up frames
+                continue
+            got.append(img.astype(np.float64))
+        avg = np.mean(got, axis=0).astype(np.uint8)
+        return cv2.cvtColor(avg, cv2.COLOR_BGR2GRAY)
 
     def get_raw_image(self):
         src = self.cap.read()[1]
@@ -163,13 +249,25 @@ class Camera:
         prev_small = None
         stable_count = 0
         n_read = 0
+        fail_streak = 0
         img = None
         while True:
             try:
                 img = self.get_rectify_crop_image()
-            except (TypeError, IndexError):
+            except (TypeError, IndexError, cv2.error):
+                # cap.read() returned nothing (unplugged mid-capture) or
+                # MSMF raised while tearing the device down. An
+                # occasional dropped frame is normal; a sustained streak
+                # means the camera is gone -> abort instead of spinning
+                # forever (the `continue` used to skip the timeout
+                # check below).
+                fail_streak += 1
+                if fail_streak > 150:
+                    raise RuntimeError('No frames from the camera '
+                                       '(unplugged or occupied by another app)')
                 time.sleep(0.01)
                 continue
+            fail_streak = 0
             n_read += 1
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             small = cv2.resize(
@@ -198,7 +296,7 @@ class Camera:
         for _ in range(avg_frames):
             try:
                 f = self.get_rectify_crop_image()
-            except (TypeError, IndexError):
+            except (TypeError, IndexError, cv2.error):
                 time.sleep(0.01)
                 continue
             img_add += f

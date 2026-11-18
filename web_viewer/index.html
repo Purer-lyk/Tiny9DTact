@@ -89,6 +89,7 @@
   .btn-grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   }
+  #btn-rescan { width: 100%; }
   button {
     background: #1a1a22; color: var(--text);
     border: 1px solid #353540; border-radius: 6px;
@@ -144,6 +145,9 @@
     <button id="btn-side">Side view</button>
     <button id="btn-reset">Reset view</button>
   </div>
+
+  <h2>Camera</h2>
+  <button id="btn-rescan" type="button">Rescan</button>
 </aside>
 
 <script type="importmap">
@@ -171,8 +175,9 @@ const Z_SCALE = 6.0;
 // smoother but laggier). Speckle noise is frame-random, so a 2-3
 // frame EMA averages it out while keeping the press response crisp.
 const TEMPORAL_ALPHA = 0.45;
-// Heights below this (mm) snap to zero so the un-pressed area is a
-// clean flat plane instead of a shimmering noise floor. Same value
+// Display heights below this (mm) snap to zero so the un-pressed area
+// stays flat. The internal EMA retains sub-threshold values so shallow
+// presses can accumulate across frames. Same value
 // as the contact threshold used in Python's compute_readings.
 const NOISE_FLOOR_MM = 0.05;
 // Contour enhancement: unsharp mask boosts shallow ridges (e.g.
@@ -444,7 +449,7 @@ function ensureMesh(W, H, pixel_per_mm) {
 // ----- Temporal denoise + contour enhancement -----
 // The height map carries per-frame speckle noise that shows up as
 // spikes (毛刺) on the mesh. An EMA across frames averages it out,
-// and a noise-floor snap flattens sub-contact values to exactly 0.
+// and an output-only noise floor flattens sub-contact display values.
 // An unsharp mask then restores the crispness of shallow features
 // (pressed characters, edges) that the smoothing softens.
 function denoiseHeight(heightFlat) {
@@ -454,17 +459,18 @@ function denoiseHeight(heightFlat) {
     state.usm_tmp = new Float32Array(N);
     state.usm_out = new Float32Array(N);
     for (let i = 0; i < N; i++) {
-      state.ema_height[i] =
+      state.ema_height[i] = heightFlat[i];
+      state.usm_out[i] =
         heightFlat[i] < NOISE_FLOOR_MM ? 0 : heightFlat[i];
     }
-    state.usm_out.set(state.ema_height);
     return state.usm_out;
   }
   const ema = state.ema_height;
   const a = TEMPORAL_ALPHA;
   for (let i = 0; i < N; i++) {
-    const v = a * heightFlat[i] + (1 - a) * ema[i];
-    ema[i] = v < NOISE_FLOOR_MM ? 0 : v;
+    // Never gate the filter's memory: doing so traps a new constant
+    // press below NOISE_FLOOR_MM / a at zero indefinitely.
+    ema[i] = a * heightFlat[i] + (1 - a) * ema[i];
   }
   // Unsharp mask: out = ema + amount * (ema - blur(ema)).
   // Separable box blur (sliding window) keeps this cheap.
@@ -724,6 +730,37 @@ document.getElementById('btn-top').onclick = () => setView('top');
 document.getElementById('btn-side').onclick = () => setView('side');
 document.getElementById('btn-reset').onclick = () => setView('default45');
 
+// ----- Camera rescan -----
+// Reconnection is fully automatic: after an unplug the server blanks
+// the viewer, re-enumerates the capture devices and picks the one
+// whose frames structurally match the last reference (so a laptop's
+// built-in webcam never hijacks the stream). Rescan just pokes that
+// process to re-run immediately.
+const rescanBtn = document.getElementById('btn-rescan');
+
+function sendJson(obj) {
+  if (state.ws && state.ws.readyState === 1) {
+    state.ws.send(JSON.stringify(obj));
+    return true;
+  }
+  setStatus('viewer not connected to the server', true);
+  return false;
+}
+
+rescanBtn.onclick = () => {
+  if (sendJson({ cmd: 'reconnect' })) {
+    setStatus('rescanning cameras …', true);
+  }
+};
+
+function handleServerJson(text) {
+  let m;
+  try { m = JSON.parse(text); } catch (e) { return; }
+  if (m.type === 'ack' && !m.ok) {
+    setStatus('camera command refused by the server', true);
+  }
+}
+
 // ----- Status indicator -----
 function setStatus(text, isError = false) {
   const el = document.getElementById('status');
@@ -785,7 +822,7 @@ function applyPending() {
     updateReadings(f);
     setStatus(
       f.status === 1
-        ? 'sensor unplugged — plug it back in to resume'
+        ? 'camera not connected — plug it in or press Rescan'
         : 'sensor re-detected — capturing reference…',
       true
     );
@@ -911,7 +948,10 @@ function connect() {
     setStatus('cannot reach ws://127.0.0.1:8765 yet...', true);
   };
   ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') return;
+    if (typeof ev.data === 'string') {
+      handleServerJson(ev.data);
+      return;
+    }
     const f = decodeFrame(new Uint8Array(ev.data));
     if (!f) return;
     // Drop stale frames if the tab was paused and many frames

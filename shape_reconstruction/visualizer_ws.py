@@ -13,11 +13,12 @@ browser.
 from __future__ import annotations
 
 import asyncio
+import json
 import struct
 import threading
 import time
 import webbrowser
-from typing import Optional
+from typing import Optional, Callable
 
 import numpy as np
 
@@ -26,6 +27,34 @@ websockets = None
 
 
 MAGIC = 0x395D534D
+
+
+# ----- Client commands (viewer -> server JSON) --------------------------------
+
+def parse_client_command(text) -> Optional[dict]:
+    """Parse a JSON text command sent by the viewer UI.
+
+    Supported commands:
+        {"cmd": "cameras"}                 -> enumerate capture devices
+        {"cmd": "select",   "index": N}    -> switch to device N
+        {"cmd": "reconnect"}               -> force reconnect cycle
+    Returns a normalised dict, or None for anything unparseable.
+    """
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    cmd = obj.get("cmd")
+    if cmd == "select":
+        try:
+            return {"cmd": "select", "index": int(obj["index"])}
+        except (KeyError, TypeError, ValueError):
+            return None
+    if cmd in ("cameras", "reconnect"):
+        return {"cmd": cmd}
+    return None
 
 
 # ----- Binary frame encoding --------------------------------------------------
@@ -156,8 +185,22 @@ class WebSocketVisualizer:
         self._clients: set = set()
         self._pending: Optional[bytes] = None
         self._pending_lock = threading.Lock()
+        # Optional viewer-side camera control (see _3_Shape_Reconstruction
+        # .CameraControl and _camera_inventory).
+        self._control = None
+        self._inventory_fn: Optional[Callable[[], dict]] = None
 
     # ----- public API ---------------------------------------------------------
+
+    def set_camera_control(self, control) -> None:
+        """Attach the CameraControl instance that forwards viewer
+        camera commands ('select' / 'reconnect') to the capture loop."""
+        self._control = control
+
+    def set_camera_inventory_fn(self, fn: Callable[[], dict]) -> None:
+        """Attach a callable returning {'active': int, 'list': [int]}
+        for the viewer's camera picker. Called on a worker thread."""
+        self._inventory_fn = fn
 
     def get_url(self) -> str:
         return f"ws://{self._host}:{self._port}"
@@ -251,13 +294,46 @@ class WebSocketVisualizer:
         try:
             # After handshake, push the latest frame immediately.
             await self._flush()
-            async for _msg in ws:
-                # We don't process client messages right now; the
-                # server is push-only. Keep the loop alive until the
-                # client disconnects.
-                pass
+            async for msg in ws:
+                # Binary traffic is server->client only; text frames
+                # carry viewer UI commands (camera picker).
+                if isinstance(msg, (bytes, bytearray)):
+                    continue
+                reply = await self._handle_command(msg)
+                if reply is not None:
+                    try:
+                        await ws.send(json.dumps(reply))
+                    except Exception:
+                        pass
         finally:
             self._clients.discard(ws)
+
+    async def _handle_command(self, text) -> Optional[dict]:
+        """Turn a viewer JSON command into a JSON-serialisable reply.
+        'cameras' probes the devices (in a worker thread so a slow
+        enumeration can't stall the frame pusher); 'select' and
+        'reconnect' are queued to the capture loop and acknowledged."""
+        cmd = parse_client_command(text)
+        if cmd is None:
+            return {"type": "error", "message": "unknown command"}
+        if cmd["cmd"] == "cameras":
+            if self._inventory_fn is None:
+                return {"type": "cameras", "active": None, "list": []}
+            loop = asyncio.get_running_loop()
+            try:
+                inv = await loop.run_in_executor(None, self._inventory_fn)
+                return {"type": "cameras", **inv}
+            except Exception as exc:  # keep the UI informed, not dead
+                return {"type": "cameras", "active": None, "list": [],
+                        "error": str(exc)}
+        if self._control is None:
+            return {"type": "ack", "cmd": cmd["cmd"], "ok": False}
+        if cmd["cmd"] == "select":
+            self._control.request_select(cmd["index"])
+        else:
+            self._control.request_reconnect()
+        return {"type": "ack", "cmd": cmd["cmd"], "ok": True,
+                "index": cmd.get("index")}
 
     async def _flush(self) -> None:
         if not self._clients:
@@ -309,4 +385,5 @@ __all__ = [
     "open_viewer",
     "_encode_frame",
     "_decode_frame",
+    "parse_client_command",
 ]

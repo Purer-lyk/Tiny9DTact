@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 from shape_reconstruction import Camera
 import yaml
+from .depth_preprocessing import darker_gray_difference
 
 
 class Sensor(Camera):
@@ -52,17 +53,15 @@ class Sensor(Camera):
             self.mixed_visualization[::, ::, 0] = self.ref_GRAY
 
     def raw_image_2_height_map(self, img_GRAY):
-        diff_raw = self.ref_GRAY - img_GRAY - self.lighting_threshold
-        # diff_raw = self.ref_GRAY - img_GRAY
-        # cv2.imshow('diff_raw', diff_raw)
-        diff_mask = (diff_raw < 180).astype(np.uint8)
-        diff = diff_raw * diff_mask + self.lighting_threshold
-        diff[diff > self.max_index] = self.max_index
+        diff = darker_gray_difference(self.ref_GRAY, img_GRAY)
+        # Retain the existing noise floor, but apply it explicitly in float.
+        baseline_index = min(int(self.lighting_threshold), self.max_index)
+        diff = np.clip(diff, baseline_index, self.max_index)
         # cv2.imshow('diff', diff)
         diff = cv2.GaussianBlur(diff.astype(np.float32), (5, 5), 0).astype(int)
         # print(self.Pixel_to_Depth[diff])
         height_map = self.Pixel_to_Depth[diff] - \
-            self.Pixel_to_Depth[self.lighting_threshold]
+            self.Pixel_to_Depth[baseline_index]
         for kernel in self.kernel_list:
             height_map = cv2.GaussianBlur(
                 height_map.astype(np.float32), (kernel, kernel), 0)

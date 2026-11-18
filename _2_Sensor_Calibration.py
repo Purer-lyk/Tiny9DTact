@@ -4,6 +4,7 @@ import cv2
 import yaml
 import os
 from shape_reconstruction import Sensor
+from shape_reconstruction.depth_preprocessing import darker_gray_difference
 
 
 class SensorCalibration:
@@ -41,7 +42,7 @@ class SensorCalibration:
         np.save(self.sensor.Pixel_to_Depth_path, Pixel_to_Depth)
 
     def circle_detection(self, diff):
-        diff_gray = (diff[::, ::, 0] + diff[::, ::, 1] + diff[::, ::, 2]) / 3
+        diff_gray = diff
         contact_mask = (diff_gray > self.circle_detection_gray).astype(np.uint8)
         contours, _ = cv2.findContours(contact_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         areas = [cv2.contourArea(c) for c in contours]
@@ -59,7 +60,8 @@ class SensorCalibration:
                 while key != ord('q'):
                     center = (int(x), int(y))
                     radius = int(radius)
-                    circle_show = cv2.circle(np.array(diff), center, radius, (0, 0, 255), 1)
+                    circle_show = cv2.cvtColor(diff.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+                    circle_show = cv2.circle(circle_show, center, radius, (0, 0, 255), 1)
                     circle_show[int(y), int(x)] = [255, 255, 255]
                     cv2.imshow('contact', circle_show.astype(np.uint8))
                     key = cv2.waitKey(0)
@@ -83,13 +85,15 @@ class SensorCalibration:
     def mapping_data_collection(self, img, ref):
         gray_list = []
         depth_list = []
-        diff_raw = ref - img
-        diff_mask = (diff_raw < 180).astype(np.uint8)
-        diff = diff_raw * diff_mask
+        diff = darker_gray_difference(ref, img)
         cv2.imshow('ref', ref)
         cv2.imshow('img', img)
-        cv2.imshow('diff', diff)
+        cv2.imshow('diff', diff.astype(np.uint8))
         center, detect_radius_p = self.circle_detection(diff)
+        if detect_radius_p <= 0:
+            raise ValueError('No valid ball contact detected; capture a new calibration sample.')
+        if detect_radius_p * self.sensor.pixel_per_mm >= self.BallRad:
+            raise ValueError('Contact radius must be smaller than BallRad; check the circle and pixel scale.')
         if detect_radius_p:
             x = np.linspace(0, diff.shape[0] - 1, diff.shape[0])
             y = np.linspace(0, diff.shape[1] - 1, diff.shape[1])
@@ -107,7 +111,7 @@ class SensorCalibration:
                 self.BallRad ** 2 - (detect_radius_p * self.sensor.pixel_per_mm) ** 2)) * mask
             # print("height_map:", height_map)
             height_map[np.isnan(height_map)] = 0
-            diff_gray = (diff[::, ::, 0] + diff[::, ::, 1] + diff[::, ::, 2]) / 3 # 可能如果画面不是真白，可能会影响
+            diff_gray = diff
             # diff_gray = self.sensor.crop_image(diff_gray)
             # height_map = self.sensor.crop_image(height_map)
             count = 0
@@ -121,31 +125,22 @@ class SensorCalibration:
             return gray_list, depth_list
 
     def get_list(self, gray_list, depth_list):
-        GRAY_scope = int(gray_list.max())
-        GRAY_Height_list = np.zeros(GRAY_scope + 1)
-
-        # 已有的直接计算均值
-        for gray_number in range(GRAY_scope + 1):
-            gray_height_sum = depth_list[gray_list == gray_number].sum()
-            gray_height_num = (gray_list == gray_number).sum()
-            if gray_height_num:
-                GRAY_Height_list[gray_number] = gray_height_sum / gray_height_num
-
-        print(GRAY_Height_list)
-
-        # 线性插值        
-        for gray_number in range(GRAY_scope + 1):
-            if GRAY_Height_list[gray_number] == 0:
-                if not gray_number:
-                    min_index = gray_number - 1
-                    max_index = gray_number + 1
-                    for i in range(GRAY_scope - gray_number):
-                        if GRAY_Height_list[gray_number + 1 + i] != 0:
-                            max_index = gray_number + 1 + i
-                            break
-                    GRAY_Height_list[gray_number] = (GRAY_Height_list[max_index] - GRAY_Height_list[min_index]) / (
-                            max_index - min_index)
-        return GRAY_Height_list
+        gray_list = np.asarray(gray_list, dtype=np.float32)
+        depth_list = np.asarray(depth_list, dtype=np.float64)
+        if gray_list.shape != depth_list.shape or gray_list.ndim != 1:
+            raise ValueError('Calibration gray and depth samples must be matching 1D arrays.')
+        valid = (np.isfinite(gray_list) & np.isfinite(depth_list)
+                 & (gray_list >= 1) & (gray_list <= 255) & (depth_list > 0))
+        if not np.any(valid):
+            raise ValueError('No valid calibration samples; the depth lookup table was not saved.')
+        bins = np.rint(gray_list[valid]).astype(np.intp)
+        counts = np.bincount(bins)
+        sums = np.bincount(bins, weights=depth_list[valid])
+        known = np.flatnonzero(counts)
+        # Anchor no intensity change at zero depth and interpolate ALL missing
+        # gray levels, not just index zero. Keep the existing variable LUT size.
+        return np.interp(np.arange(len(counts)), np.r_[0, known],
+                         np.r_[0.0, sums[known] / counts[known]])
 
 if __name__ == '__main__':
     config_path = './shape_reconstruction/shape_config.yaml'
