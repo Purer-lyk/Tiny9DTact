@@ -84,6 +84,39 @@ python _3_Shape_Reconstruction.py --deblur
 
 GoPro 权重针对运动模糊。接入后先比较细线轮廓、无接触误报和已知压深下的毫米读数，模型推理也会降低帧率。
 
+### 精密重建模式：实测标定与验收
+
+只有钢球、没有位移滑台时，可以对采集目录运行自动估计，不用填写 `session.json` 里的 `null`：
+
+```powershell
+python precision_calibration.py fit-auto .\captures\fit-01\session.json
+python _3_Shape_Reconstruction.py --precision-circle
+```
+
+程序读取 `depth_calibration.BallRad` 和相机标定比例，从差分图检测接触圆。部分裁切或遮挡时，尝试从剩余的可见弧估计圆心和半径。要求圆心在画面内，至少约 150° 的弧有足够轮廓支持，且不同阈值下估计稳定；遮挡或画面外的位置不参与拟合。自动分组后仍需至少 **2×2 个规则位置、各 3 个不同压深**；在每个位置让球只上下移动，拍轻、中、重三档，尽量让大部分接触边界可见。`circle_estimates.json` 记录圆拟合方法、估计压深和拒绝原因，即使拟合失败也可查看。自动标定表单独保存为 `precision_depth_circle.npz`；这是估计深度，不能当作独立实测精度。
+
+`--precision` 使用本机多位置、多压深的独立标定。它在传感器原采样网格上查表，不使用 NAFNet、空间高斯或查看器的时间平滑与锐化。逐像素背景噪声来自启动和重连时的 16 张空载帧；启动前请移开压头。**Outside calibration** 显示候选接触像素中超出信号范围或标定网格的比例，这些像素不计入深度读数，在实时图中留空。显示对比度倍数仍可使用。
+
+```powershell
+python precision_calibration.py capture .\captures\fit-01
+python precision_calibration.py fit .\captures\fit-01\session.json
+python precision_calibration.py capture .\captures\check-01
+python precision_calibration.py evaluate .\captures\check-01\session.json --export .\captures\check-01-arrays
+python _3_Shape_Reconstruction.py --precision
+```
+
+两次 `capture` 都先在无接触时按 **R** 保存参考帧，再按 **S** 逐张保存静止按压图，按 **Q** 退出。拍摄时保持相机、照明和凝胶装配一致。使用带位移读数的滑台和半径已知的钢球；设定刚接触为零位，记录法向压入量。按下 S 时采集终端会显示图像文件名。采集完成后，在各自的 `session.json` 中填入实际值，例如：
+
+```json
+{"file":"sample_000.png", "center_xy":[210,140], "node_xy":[210,140], "indent_mm":0.20}
+```
+
+`center_xy` 是钢球中心在采集窗口未翻转的矫正裁剪图中的 `[列, 行]`，由夹具定位或对准标记确定；`indent_mm` 由滑台独立读出，不能用当前深度图或灰度接触圈反推。`node_xy` 是重复采样的固定网格位置；未填则使用 `center_xy`。至少采满 **2×2** 网格、每个位置至少 **3 个不同压深**；建议从 **3×3** 与多个压深起步，选择覆盖工作区的节点。网格越靠边，越需要注意压头是否仍有足够面积贴合。换镜头、改对焦、改光照或换胶后，重新采集。`fit` 默认生成独立的 `precision_depth.npz`，已有文件会拒绝覆盖。
+
+验收数据用另一次采集，优先在网格之间的**未参与标定位置**和未参与标定的压深测试。报告中的 `mae_mm` / `rmse_mm` 和球心误差是对参考几何的误差；要与 `coverage_pct` 一起看。若同目录有旧查找表，也会报告同一批有效像素上的旧算法 MAE（不加高斯）。空载样本可在清单中标记 `"unloaded":true`，查看误检像素比例。非钢球压头的验收样本可提供 `truth_npy` 和 `valid_mask_npy`（与矫正图逐像素对齐的毫米深度及可信区域）。每帧导出灰度差、深度、几何参考和超范围掩码，超范围深度为 `NaN`。用已知间距的双线压头检查横截面是否有两峰一谷；如果未滤波灰度差没有谷，就先改传感器信号，不能靠该算法恢复未观测的细节。
+
+实现思路参考 [9DTact](https://arxiv.org/abs/2308.14277) 的灰度深度测量、[GelSlim 3.0](https://arxiv.org/abs/2103.12269) 的光学和几何分辨率分析、[GelSlim 4.0](https://arxiv.org/abs/2409.19770) 的几何监督及 [GelSlim 5.0](https://arxiv.org/abs/2610.31334) 对局部几何特征的保留；[SITR（ICLR 2025）](https://openreview.net/forum?id=RnJY9WcpA3) 讨论了跨传感器响应差异，张雅展的[接触事件工作](https://adamzhang129.github.io/publications/ContactEventLearning) 提供了将事件检测独立于几何测量的思路。本模式保留 9DTact 的原硬件，靠本机标定和独立验证；没有移植其他传感器的光度模型或预训练深度网络。查看器仍按 0.01 mm 传输，离线导出保留浮点精度。几何参考只对压头贴合处成立，不是对整片凝胶的独立测量。
+
 ## 运行模式
 
 | 命令 | 说明 |
@@ -99,6 +132,8 @@ GoPro 权重针对运动模糊。接入后先比较细线轮廓、无接触误�
 **3D 视图**（左侧）：左键拖拽旋转、滚轮缩放、右键平移；右侧按钮切换预设视角（Default 45° / Top / Side / Reset）。坐标轴位于网格左下角，显示方向与物理传感器一致（相机镜像已在解码端翻转）。
 
 **2D 深度图**（右上）：默认用自动色标显示平滑增强后的深度。勾选 **Detail mode (raw depth)** 后，直接用后端深度绘制热图，拖动 **Contrast multiplier** 滑块（1×–6×）调整显示对比度。倍数越高，色标中间附近的深度差越明显，两端更容易达到最低色或最高色。设置只影响 2D 显示。
+
+![9DTact 实时 2D 触觉深度热图](assets/depth-map.png)
 
 **读数面板**：Max depth（当前帧最大深度 mm）、Contact area（接触面积 mm²）、FPS（采集端帧率）、Render FPS（渲染帧率）、Latency（编码到上屏延迟 ms）、GPU（实际 WebGL 渲染器，若显示 SwiftShader 说明落到了软件渲染）、Sensor 状态灯（LIVE / UNPLUGGED / RECONNECTING）。
 
@@ -156,7 +191,7 @@ USB 相机 ──► Camera (矫正+裁剪) ──► Sensor (高度图) ──�
 | 16 / 18 | u16 / u16 | H / W |
 | 20–44 | 7×f32 | pixel_per_mm, max_depth, area_mm², cx, cy, fps, depth_max |
 | 48 | u8 | status（0 实时 / 1 已拔线 / 2 重连中） |
-| 49 | u8 | pad（保证深度数组 2 字节对齐） |
+| 49 | u8 | 精密模式质量；0 表示普通模式，1–101 表示 0–100% 超出标定 |
 
 ## 目录结构
 
